@@ -1,0 +1,23 @@
+{
+  "name": "pcg-leaderboard",
+  "version": "1.0.0",
+  "description": "Prestigious Capital Group — multi-location commission leaderboard powered by the GoHighLevel API v2",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "cookie-parser": "^1.4.7",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "express-rate-limit": "^7.5.0",
+    "jsonwebtoken": "^9.0.2"
+  },
+  "license": "UNLICENSED",
+  "private": true
+}

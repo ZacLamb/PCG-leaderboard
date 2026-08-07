@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PCG Commission Leaderboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<div class="container">
+
+  <header class="header">
+    <div class="header-left">
+      <img class="logo-img" src="/logo.png" alt="Prestigious Capital Group" onerror="this.style.display='none'">
+      <div>
+        <div class="header-title">COMMISSION LEADERBOARD</div>
+        <div class="header-sub" id="header-sub">Loading…</div>
+      </div>
+    </div>
+    <div class="header-right">
+      <div class="live-badge"><span class="live-dot"></span>LIVE</div>
+      <div class="auth-row">
+        <span class="role-chip" id="role-chip">Viewer</span>
+        <button class="link-btn" id="auth-btn">Admin login</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- LOCATION TOGGLE -->
+  <div class="controls">
+    <div class="control-group">
+      <span class="control-label">Office</span>
+      <div class="seg" id="location-seg"></div>
+    </div>
+
+    <div class="control-group">
+      <span class="control-label">Period</span>
+      <div class="seg" id="preset-seg">
+        <button class="seg-btn active" data-preset="mtd">MTD</button>
+        <button class="seg-btn" data-preset="last30">30D</button>
+        <button class="seg-btn" data-preset="last60">60D</button>
+        <button class="seg-btn" data-preset="last90">90D</button>
+        <button class="seg-btn" data-preset="lastMonth">Last Mo</button>
+        <button class="seg-btn" data-preset="ytd">YTD</button>
+      </div>
+    </div>
+
+    <div class="control-group">
+      <span class="control-label">Month</span>
+      <select class="select" id="month-select"><option value="">—</option></select>
+    </div>
+
+    <div class="control-group">
+      <span class="control-label">Range</span>
+      <div class="range-row">
+        <select class="select sm" id="from-select"><option value="">From</option></select>
+        <span class="range-arrow">→</span>
+        <select class="select sm" id="to-select"><option value="">To</option></select>
+        <button class="ghost-btn" id="apply-range">Apply</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="period-bar">
+    <span class="period-label" id="period-label">—</span>
+    <span class="spacer"></span>
+    <span class="cache-note" id="cache-note"></span>
+    <button class="ghost-btn" id="refresh-btn" hidden>↻ Refresh data</button>
+  </div>
+
+  <div id="warnings" class="warnings" hidden></div>
+
+  <!-- STATS -->
+  <div class="stats-row" id="stats-row"></div>
+
+  <!-- LEADERBOARD -->
+  <div class="section-title">🏆 Broker Rankings</div>
+  <div class="table-wrap">
+    <div class="loading" id="loading"><div class="spinner"></div>Loading leaderboard…</div>
+    <div class="empty" id="empty" hidden></div>
+    <table id="board-table" hidden>
+      <thead><tr id="board-head"></tr></thead>
+      <tbody id="board-body"></tbody>
+    </table>
+  </div>
+
+  <!-- DEAL DETAIL -->
+  <div class="section-title collapsible" id="deals-toggle">
+    <span>📋 Deal Detail</span>
+    <span class="chev" id="deals-chev">▸</span>
+  </div>
+  <div class="table-wrap" id="deals-wrap" hidden>
+    <table id="deals-table">
+      <thead><tr id="deals-head"></tr></thead>
+      <tbody id="deals-body"></tbody>
+    </table>
+  </div>
+
+  <footer class="footer">
+    <span>Prestigious Capital Group — powered by GoHighLevel</span>
+    <span id="footer-meta"></span>
+  </footer>
+
+</div>
+
+<!-- LOGIN MODAL -->
+<div class="modal-backdrop" id="login-modal" hidden>
+  <div class="modal">
+    <div class="modal-title">Admin Login</div>
+    <p class="modal-sub">Commission and fee data is visible to admins only.</p>
+    <input type="password" class="input" id="password-input" placeholder="Password" autocomplete="current-password">
+    <div class="modal-err" id="login-err" hidden></div>
+    <div class="modal-actions">
+      <button class="ghost-btn" id="login-cancel">Cancel</button>
+      <button class="primary-btn" id="login-submit">Log in</button>
+    </div>
+  </div>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>
