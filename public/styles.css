@@ -17,6 +17,14 @@
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
+/**
+ * The browser's default `[hidden] { display: none }` loses to any author rule
+ * that sets `display` — so an element like .modal-backdrop (display: flex)
+ * stays visible even with the hidden attribute set. This guarantees hidden
+ * always wins, for every element, regardless of what else is styled on it.
+ */
+[hidden] { display: none !important; }
+
 body {
   background: var(--bg);
   color: var(--text);

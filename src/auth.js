@@ -30,17 +30,37 @@ function safeEqual(a, b) {
 
 export function createSession(res, { role }, secret) {
   const token = jwt.sign({ role }, secret, { expiresIn: TOKEN_TTL });
+  const isProd = process.env.NODE_ENV === 'production';
+
+  /**
+   * When the dashboard is embedded as a GHL custom menu link, it runs in a
+   * cross-site iframe. A SameSite=Lax cookie is dropped in that context, so
+   * login would appear to succeed and then immediately revert to viewer.
+   * SameSite=None keeps the session working inside the iframe, and the spec
+   * requires Secure alongside it — which Railway satisfies (HTTPS by default).
+   *
+   * Locally over plain HTTP, Secure cookies can't be set at all, so fall back
+   * to Lax for development.
+   */
   res.cookie(COOKIE_NAME, token, {
     httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
+    secure: isProd,
+    sameSite: isProd ? 'none' : 'lax',
     maxAge: 12 * 60 * 60 * 1000,
   });
+
   return token;
 }
 
 export function clearSession(res) {
-  res.clearCookie(COOKIE_NAME);
+  const isProd = process.env.NODE_ENV === 'production';
+  // Browsers only clear a cookie when the attributes match the ones it was set
+  // with — a bare clearCookie() would leave the iframe session alive.
+  res.clearCookie(COOKIE_NAME, {
+    httpOnly: true,
+    secure: isProd,
+    sameSite: isProd ? 'none' : 'lax',
+  });
 }
 
 /** Reads the session cookie and attaches req.role ('admin' | 'viewer'). */
