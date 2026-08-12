@@ -149,6 +149,7 @@ export async function fetchCustomFieldDefs({ token, locationId }) {
   const fields = data.customFields || data.customField || [];
   const map = {};
   let skippedNonOpportunity = 0;
+  let keptUnknownModel = 0;
 
   for (const f of fields) {
     if (!f.id) continue;
@@ -156,11 +157,22 @@ export async function fetchCustomFieldDefs({ token, locationId }) {
     const fieldKey = f.fieldKey || f.key || '';
     const model = f.model || f.objectType || '';
 
-    // Trust whichever signal is present: the explicit model, or the fieldKey
-    // prefix ("opportunity.funded_amount" vs "contact.funded_amount").
-    const isOpportunity = model
-      ? String(model).toLowerCase() === 'opportunity'
-      : fieldKey.startsWith('opportunity.');
+    /**
+     * Decide the model from whichever signal exists. If neither the model nor
+     * a prefixed fieldKey is present, KEEP the field rather than dropping it —
+     * excluding everything on missing metadata would empty the map and make
+     * every value read as zero, which is a far worse failure than tolerating
+     * an occasional contact field (fieldKey matching still disambiguates).
+     */
+    let isOpportunity;
+    if (model) {
+      isOpportunity = String(model).toLowerCase() === 'opportunity';
+    } else if (fieldKey.includes('.')) {
+      isOpportunity = fieldKey.startsWith('opportunity.');
+    } else {
+      isOpportunity = true;
+      keptUnknownModel++;
+    }
 
     if (!isOpportunity) {
       skippedNonOpportunity++;
@@ -170,17 +182,75 @@ export async function fetchCustomFieldDefs({ token, locationId }) {
     map[f.id] = {
       name: f.name || fieldKey,
       fieldKey,
-      model: model || 'opportunity',
+      model: model || (fieldKey.startsWith('opportunity.') ? 'opportunity' : 'unknown'),
     };
   }
 
   // Non-enumerable so it never shows up in JSON responses.
   Object.defineProperty(map, '__meta', {
-    value: { total: fields.length, kept: Object.keys(map).length, skippedNonOpportunity },
+    value: {
+      total: fields.length,
+      kept: Object.keys(map).length,
+      skippedNonOpportunity,
+      keptUnknownModel,
+    },
     enumerable: false,
   });
 
   return map;
+}
+
+/** Fetch one opportunity in full. The search endpoint omits custom fields. */
+export async function fetchOpportunityDetail({ token, locationId, opportunityId }) {
+  const data = await ghlFetch(`/opportunities/${opportunityId}`, { token, locationId });
+  return data.opportunity || data;
+}
+
+/**
+ * Fill in custom fields that the search endpoint didn't return.
+ *
+ * GHL's opportunity search returns a lean object — custom fields are commonly
+ * absent even when the opportunity has values set. Without this, every custom
+ * field reads empty and the board shows $0 across the board.
+ *
+ * We check the search results first and skip all of this if they already
+ * carry custom fields, so we don't spend hundreds of calls for nothing.
+ */
+export async function enrichWithCustomFields({ token, locationId, opportunities, concurrency = 6 }) {
+  if (!opportunities.length) return { opportunities, enriched: false };
+
+  const alreadyHasFields = opportunities.some(
+    (o) => Array.isArray(o.customFields) && o.customFields.length > 0
+  );
+  if (alreadyHasFields) return { opportunities, enriched: false };
+
+  const out = new Array(opportunities.length);
+  let cursor = 0;
+  let failures = 0;
+
+  async function worker() {
+    while (cursor < opportunities.length) {
+      const i = cursor++;
+      const opp = opportunities[i];
+      try {
+        const full = await fetchOpportunityDetail({
+          token,
+          locationId,
+          opportunityId: opp.id,
+        });
+        // Keep the search fields (they include contact and stage data) and
+        // layer the detail response's custom fields on top.
+        out[i] = { ...opp, ...full, customFields: full.customFields || opp.customFields || [] };
+      } catch {
+        failures++;
+        out[i] = opp; // Degrade to the lean record rather than losing the deal.
+      }
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(concurrency, opportunities.length) }, worker));
+
+  return { opportunities: out, enriched: true, failures };
 }
 
 /** Map of userId -> display name, for resolving the opportunity owner (broker). */

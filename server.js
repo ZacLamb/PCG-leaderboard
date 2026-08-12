@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { loadConfig, validateConfig } from './src/config.js';
-import { fetchOpportunities, fetchUsers, resolveFundedStage, fetchCustomFieldDefs } from './src/ghl.js';
+import { fetchOpportunities, fetchUsers, resolveFundedStage, fetchCustomFieldDefs, enrichWithCustomFields } from './src/ghl.js';
 import { normalizeOpportunities, aggregateByBroker, buildTotals, fieldHealth } from './src/normalize.js';
 import { resolveRange, availableMonths } from './src/dateRange.js';
 import { cached, getStale, invalidate, cacheMeta } from './src/cache.js';
@@ -65,12 +65,33 @@ async function syncLocation(loc) {
       }
     }
 
-    const [opportunities, users, fieldDefs] = await Promise.all([
+    const [rawOpportunities, users, fieldDefs] = await Promise.all([
       fetchOpportunities({ token: loc.token, locationId: loc.id, pipelineId, stageId }),
       fetchUsers({ token: loc.token, locationId: loc.id }),
       // Required: opportunity payloads carry custom field IDs, not names.
       fetchCustomFieldDefs({ token: loc.token, locationId: loc.id }),
     ]);
+
+    /**
+     * Status filter. The stage already scopes us to Funded, but a deal can sit
+     * in Funded and still be marked lost or abandoned — those shouldn't count
+     * toward anyone's numbers. Default excludes them while keeping both won and
+     * open, since teams don't always flip status the moment a deal funds.
+     * Set OPPORTUNITY_STATUS=won to count only explicitly won deals.
+     */
+    const statusFiltered = rawOpportunities.filter((o) => {
+      const st = String(o.status || '').toLowerCase();
+      if (cfg.opportunityStatuses.includes('all')) return true;
+      if (!st) return true; // no status set — keep it, the stage is the signal
+      return cfg.opportunityStatuses.includes(st);
+    });
+
+    // The search endpoint usually omits custom fields; fill them in per-deal.
+    const { opportunities } = await enrichWithCustomFields({
+      token: loc.token,
+      locationId: loc.id,
+      opportunities: statusFiltered,
+    });
 
     return normalizeOpportunities(opportunities, users, {
       locationId: loc.id,
@@ -326,6 +347,11 @@ app.get('/api/diagnostics', async (req, res) => {
           zeroFundedAmount: rows.filter((r) => !r.fundedAmount).length,
           zeroCommission: rows.filter((r) => !r.commission).length,
           unassignedBroker: rows.filter((r) => r.broker === 'Unassigned').length,
+          statusBreakdown: rows.reduce((acc, r) => {
+            const k = r.status || '(none)';
+            acc[k] = (acc[k] || 0) + 1;
+            return acc;
+          }, {}),
         },
       });
     } catch (err) {
@@ -336,6 +362,7 @@ app.get('/api/diagnostics', async (req, res) => {
   res.json({
     configuredFieldNames: cfg.fieldNames,
     commissionReadsOpportunityValueField: cfg.commissionFromValue,
+    countedStatuses: cfg.opportunityStatuses,
     hint:
       'Funded Amount comes from the custom field of that name. Commission comes from ' +
       'the opportunity Value field. If a figure is wrong, compare resolvedFrom on the ' +

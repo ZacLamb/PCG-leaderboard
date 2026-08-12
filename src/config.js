@@ -96,6 +96,15 @@ export function loadConfig() {
     commissionFromValue: String(process.env.COMMISSION_FROM_VALUE || 'true').toLowerCase() !== 'false',
 
     /**
+     * Which opportunity statuses count. Default keeps won and open and drops
+     * lost/abandoned: the Funded stage is the primary signal, but a deal parked
+     * there and later marked lost shouldn't inflate anyone's total. Set to
+     * "won" to be strict, or "all" to ignore status entirely.
+     */
+    opportunityStatuses: String(process.env.OPPORTUNITY_STATUS || 'won,open')
+      .split(',').map((s) => s.trim().toLowerCase()).filter(Boolean),
+
+    /**
      * Candidates for each value, tried in order. Field keys come first because
      * they name their model explicitly ("opportunity.funded_amount"), which
      * avoids binding to a same-named contact field. Display names follow as a
