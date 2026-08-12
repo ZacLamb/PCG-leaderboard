@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { loadConfig, validateConfig } from './src/config.js';
-import { fetchOpportunities, fetchUsers, resolveFundedStage, fetchCustomFieldDefs, enrichWithCustomFields, setLogger } from './src/ghl.js';
+import { fetchOpportunities, fetchUsers, resolveFundedStage, fetchCustomFieldDefs, enrichWithCustomFields, setLogger, fetchPipelines } from './src/ghl.js';
 import { normalizeOpportunities, aggregateByBroker, buildTotals, fieldHealth } from './src/normalize.js';
 import { resolveRange, availableMonths } from './src/dateRange.js';
 import { cached, getStale, invalidate, cacheMeta } from './src/cache.js';
@@ -118,6 +118,9 @@ async function syncLocation(loc) {
 
     if (rawOpportunities.length === 0) {
       log('⚠️  Search returned no opportunities in this stage.');
+      log(`    Resolved stage was "${cfg.fundedStageName}" in pipeline id ${pipelineId}.`);
+      log('    If this office does have funded deals, the stage name likely matched');
+      log(`    the wrong pipeline — set ${loc.slot}_PIPELINE_ID and ${loc.slot}_STAGE_ID explicitly.`);
       return [];
     }
 
@@ -498,6 +501,18 @@ app.get('/api/selftest', selftestLimiter, async (req, res) => {
   for (const loc of cfg.locations) {
     const entry = { name: loc.name, locationId: loc.id, tokenPrefix: loc.token.slice(0, 8) + '…' };
     try {
+      // Every pipeline/stage available, so a wrong-pipeline match is obvious.
+      try {
+        const pipelines = await fetchPipelines({ token: loc.token, locationId: loc.id });
+        entry.pipelines = pipelines.map((p) => ({
+          name: p.name,
+          id: p.id,
+          stages: (p.stages || []).map((s) => ({ name: s.name, id: s.id })),
+        }));
+      } catch (e) {
+        entry.pipelines = `could not list: ${e.message}`;
+      }
+
       const rows = await syncLocation(loc);
       const health = fieldHealth(rows);
 
@@ -522,6 +537,7 @@ app.get('/api/selftest', selftestLimiter, async (req, res) => {
         a[k] = (a[k] || 0) + 1;
         return a;
       }, {});
+      entry.rawCustomFieldShape = rows[0]?._rawCustomFields || [];
       entry.sampleDeals = rows.slice(0, 3).map((r) => ({
         broker: r.broker,
         businessName: r.businessName,

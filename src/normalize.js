@@ -21,24 +21,65 @@ function normKey(s) {
 }
 
 /**
+ * Pull the value out of one custom field entry.
+ *
+ * GHL returns typed value properties rather than a single `value` key, and
+ * which one is populated depends on the field's type. Text fields commonly
+ * arrive as fieldValueString while NUMERICAL fields use a numeric property —
+ * so checking only the string-ish keys silently zeroes every money field while
+ * text fields like Lender resolve fine.
+ *
+ * Ordered by specificity, then a catch-all scan for any fieldValue* property
+ * so a type we haven't seen still resolves.
+ */
+const VALUE_KEYS = [
+  'fieldValue',
+  'fieldValueString',
+  'fieldValueNumber',
+  'fieldValueNumerical',
+  'numerical',
+  'fieldValueDate',
+  'fieldValueArray',
+  'selectedOptions',
+  'value',
+  'text',
+  'date',
+];
+
+function extractFieldValue(f) {
+  const usable = (v) => {
+    if (v === undefined || v === null || v === '') return false;
+    if (Array.isArray(v)) return v.length > 0;
+    return typeof v !== 'object'; // skip nested objects, no sensible scalar
+  };
+  const flatten = (v) => (Array.isArray(v) ? v.filter(Boolean).join(', ') : v);
+
+  for (const k of VALUE_KEYS) {
+    if (usable(f[k])) return flatten(f[k]);
+  }
+
+  // Catch-all: any other fieldValue* property this payload happens to carry.
+  for (const [k, v] of Object.entries(f)) {
+    if (!/^fieldValue/i.test(k)) continue;
+    if (usable(v)) return flatten(v);
+  }
+
+  return '';
+}
+
+/**
  * Build a lookup of normalized custom-field-name -> value for one opportunity.
  *
- * GHL v2 returns opportunity custom fields as { id, fieldValue } with no name,
- * so `fieldDefs` (fieldId -> { name, fieldKey }) is what makes them readable.
- * Anything the payload does carry inline is indexed too, so this still works if
- * GHL starts including names.
+ * GHL v2 returns opportunity custom fields as { id, <typed value> } with no
+ * name, so `fieldDefs` (fieldId -> { name, fieldKey }) is what makes them
+ * readable. Anything the payload does carry inline is indexed too.
  */
 function customFieldMap(opp, fieldDefs = {}) {
   const map = {};
   const fields = opp.customFields || opp.customField || [];
 
   for (const f of fields) {
-    const value =
-      f.fieldValue !== undefined ? f.fieldValue :
-      f.value !== undefined ? f.value :
-      f.fieldValueString !== undefined ? f.fieldValueString :
-      '';
-
+    const value = extractFieldValue(f);
     if (value === '' || value === null || value === undefined) continue;
 
     const def = f.id ? fieldDefs[f.id] : null;
@@ -97,10 +138,7 @@ function pickById(opp, fieldId) {
   const fields = opp.customFields || opp.customField || [];
   for (const f of fields) {
     if (f.id !== fieldId) continue;
-    const v =
-      f.fieldValue !== undefined ? f.fieldValue :
-      f.value !== undefined ? f.value :
-      f.fieldValueString !== undefined ? f.fieldValueString : '';
+    const v = extractFieldValue(f);
     if (v !== '' && v !== null && v !== undefined) {
       return { value: v, source: `field id ${fieldId}` };
     }
@@ -224,6 +262,9 @@ export function normalizeOpportunities(opportunities, users, opts) {
       },
       // Every custom field name this opportunity carries, resolved through the
       // definitions map — so diagnostics can show the real names.
+      // Raw entries for the first few fields, so diagnostics can show the
+      // exact payload shape rather than us inferring it.
+      _rawCustomFields: (opp.customFields || []).slice(0, 6),
       _availableFields: (opp.customFields || [])
         .map((f) => (f.id && fieldDefs[f.id]?.name) || f.name || f.fieldKey || f.id)
         .filter(Boolean),
@@ -361,6 +402,6 @@ export function fieldHealth(rows) {
 
 /** Remove internal diagnostic keys before sending rows anywhere user-facing. */
 export function stripInternals(row) {
-  const { _sources, _availableFields, ...clean } = row;
+  const { _sources, _availableFields, _rawCustomFields, ...clean } = row;
   return clean;
 }
