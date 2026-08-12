@@ -70,6 +70,10 @@ async function ghlFetch(path, { token, locationId, params = {}, retries = 3 } = 
 
     if (!res.ok) {
       const body = await res.text().catch(() => '');
+      // Surface the real reason in Railway logs — a 401 (bad token) and a 422
+      // (bad params) need completely different fixes, and a silent throw makes
+      // them indistinguishable.
+      console.error(`[GHL] ${res.status} ${path} — ${body.slice(0, 300)}`);
       const err = new Error(`GHL ${res.status} on ${path}: ${body.slice(0, 300)}`);
       err.status = res.status;
       throw err;
@@ -105,6 +109,17 @@ export async function fetchOpportunities({ token, locationId, pipelineId, stageI
     });
 
     const batch = data.opportunities || [];
+
+    // One-time shape check: if the response doesn't have an `opportunities`
+    // array, the query succeeded but we're reading the wrong key — worth
+    // saying out loud rather than silently returning zero deals.
+    if (page === 1 && !Array.isArray(data.opportunities)) {
+      console.error(
+        `[GHL] /opportunities/search returned no "opportunities" array. ` +
+        `Top-level keys: ${Object.keys(data).join(', ')}`
+      );
+    }
+
     all.push(...batch);
 
     if (batch.length < limit) break;
@@ -147,6 +162,24 @@ export async function fetchCustomFieldDefs({ token, locationId }) {
   }
 
   const fields = data.customFields || data.customField || [];
+
+  if (!Array.isArray(data.customFields) && !Array.isArray(data.customField)) {
+    console.error(
+      `[GHL] /locations/${locationId}/customFields returned no field array. ` +
+      `Top-level keys: ${Object.keys(data).join(', ')}`
+    );
+  } else {
+    // Model breakdown as GHL reported it — this is the fastest way to see
+    // whether opportunity fields are coming back at all.
+    const byModel = fields.reduce((a, f) => {
+      const m = f.model || f.objectType ||
+        (String(f.fieldKey || '').split('.')[0] || 'unknown');
+      a[m] = (a[m] || 0) + 1;
+      return a;
+    }, {});
+    console.log(`[GHL] customFields for ${locationId}: ${fields.length} total ${JSON.stringify(byModel)}`);
+  }
+
   const map = {};
   let skippedNonOpportunity = 0;
   let keptUnknownModel = 0;

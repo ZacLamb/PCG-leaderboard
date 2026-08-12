@@ -44,6 +44,10 @@ async function syncLocation(loc) {
   const key = `loc:${loc.id}`;
 
   const { value } = await cached(key, cfg.cacheTtlMs, async () => {
+    const log = (msg) => console.log(`[${loc.name}] ${msg}`);
+    log('─'.repeat(50));
+    log(`Sync starting — location ${loc.id}`);
+
     // Resolve the Funded stage unless it's pinned in env.
     let pipelineId = loc.pipelineId;
     let stageId = loc.stageId;
@@ -63,6 +67,9 @@ async function syncLocation(loc) {
           `Set ${loc.slot}_STAGE_ID or fix FUNDED_STAGE_NAME.`
         );
       }
+      log(`Stage resolved: "${resolved.pipelineName}" → "${resolved.stageName}" (${stageId})`);
+    } else {
+      log(`Stage pinned from env: ${stageId}`);
     }
 
     const [rawOpportunities, users, fieldDefs] = await Promise.all([
@@ -71,6 +78,37 @@ async function syncLocation(loc) {
       // Required: opportunity payloads carry custom field IDs, not names.
       fetchCustomFieldDefs({ token: loc.token, locationId: loc.id }),
     ]);
+
+    log(`Opportunities in stage: ${rawOpportunities.length}`);
+    log(`Users: ${Object.keys(users).length}`);
+
+    const defMeta = fieldDefs.__meta || {};
+    log(
+      `Custom field defs: ${Object.keys(fieldDefs).length} usable ` +
+      `(from ${defMeta.total ?? '?'} total, ${defMeta.skippedNonOpportunity ?? 0} non-opportunity dropped, ` +
+      `${defMeta.keptUnknownModel ?? 0} kept with unknown model)`
+    );
+
+    if (Object.keys(fieldDefs).length === 0) {
+      log('⚠️  NO usable custom field definitions — every custom field will read empty.');
+      log('    The /locations/{id}/customFields endpoint returned nothing for the opportunity model.');
+    } else {
+      const sampleNames = Object.values(fieldDefs).slice(0, 8).map((d) => d.fieldKey || d.name);
+      log(`    e.g. ${sampleNames.join(', ')}`);
+    }
+
+    if (rawOpportunities.length === 0) {
+      log('⚠️  Search returned no opportunities in this stage.');
+      return [];
+    }
+
+    // How the search endpoint reported statuses, before filtering.
+    const statusCounts = rawOpportunities.reduce((a, o) => {
+      const k = o.status || '(none)';
+      a[k] = (a[k] || 0) + 1;
+      return a;
+    }, {});
+    log(`Status breakdown: ${JSON.stringify(statusCounts)}`);
 
     /**
      * Status filter. The stage already scopes us to Funded, but a deal can sit
@@ -85,15 +123,33 @@ async function syncLocation(loc) {
       if (!st) return true; // no status set — keep it, the stage is the signal
       return cfg.opportunityStatuses.includes(st);
     });
+    log(`After status filter [${cfg.opportunityStatuses.join(',')}]: ${statusFiltered.length}`);
+
+    const searchHadFields = statusFiltered.some(
+      (o) => Array.isArray(o.customFields) && o.customFields.length > 0
+    );
+    log(`Search response included custom fields: ${searchHadFields ? 'yes' : 'no'}`);
 
     // The search endpoint usually omits custom fields; fill them in per-deal.
-    const { opportunities } = await enrichWithCustomFields({
+    const { opportunities, enriched, failures } = await enrichWithCustomFields({
       token: loc.token,
       locationId: loc.id,
       opportunities: statusFiltered,
     });
 
-    return normalizeOpportunities(opportunities, users, {
+    if (enriched) {
+      const withFields = opportunities.filter(
+        (o) => Array.isArray(o.customFields) && o.customFields.length > 0
+      ).length;
+      log(`Enriched ${opportunities.length} deals individually — ${withFields} now carry custom fields` +
+          (failures ? `, ${failures} detail fetches failed` : ''));
+
+      if (withFields === 0) {
+        log('⚠️  Detail fetches returned no custom fields either.');
+      }
+    }
+
+    const rows = normalizeOpportunities(opportunities, users, {
       locationId: loc.id,
       locationName: loc.name,
       fieldNames: cfg.fieldNames,
@@ -101,6 +157,24 @@ async function syncLocation(loc) {
       fieldIds: loc.fieldIds,
       commissionFromValue: cfg.commissionFromValue,
     });
+
+    const health = fieldHealth(rows);
+    log(`Resolved: funded ${health.fundedResolved}/${rows.length}` +
+        (health.resolvedVia.fundedAmount?.length ? ` via ${health.resolvedVia.fundedAmount.join('|')}` : '') +
+        `, commission ${health.commissionFromField + health.commissionFromValue}/${rows.length}`);
+
+    if (rows[0]) {
+      const s = rows[0];
+      log(`Sample: ${s.broker} | ${s.businessName} | funded $${s.fundedAmount} | comm $${s.commission} | ${s.lender} | ${s.fundedDate}`);
+    }
+
+    if (health.fundedMissing === rows.length && rows.length > 0) {
+      log('⚠️  No deal resolved a Funded Amount.');
+      log(`    Field names seen on deals: ${health.availableFields.slice(0, 15).join(', ') || '(none)'}`);
+    }
+
+    log(`Sync complete — ${rows.length} rows`);
+    return rows;
   });
 
   return value;
