@@ -54,6 +54,15 @@ export function loadConfig() {
     barMax: Number(process.env.BAR_MAX) || 30000,
 
     /**
+     * Whether a missing "Funded Amount" custom field may fall back to the
+     * opportunity's monetaryValue. Off by default: in most MCA pipelines that
+     * field holds commission or brokerage revenue, so falling back silently
+     * turns "Total Funded" into a commission total with no visible sign.
+     * Set ALLOW_MONETARY_VALUE_FALLBACK=true only if you know it holds deal size.
+     */
+    allowMonetaryFallback: String(process.env.ALLOW_MONETARY_VALUE_FALLBACK || '').toLowerCase() === 'true',
+
+    /**
      * Custom field names to look for, in priority order. Matching is
      * case/space/punctuation-insensitive, so "Funded Amount", "funded_amount",
      * and "FundedAmount" all resolve to the same field.

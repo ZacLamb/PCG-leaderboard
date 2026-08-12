@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 
 import { loadConfig, validateConfig } from './src/config.js';
 import { fetchOpportunities, fetchUsers, resolveFundedStage } from './src/ghl.js';
-import { normalizeOpportunities, aggregateByBroker, buildTotals } from './src/normalize.js';
+import { normalizeOpportunities, aggregateByBroker, buildTotals, fieldHealth } from './src/normalize.js';
 import { resolveRange, availableMonths } from './src/dateRange.js';
 import { cached, getStale, invalidate, cacheMeta } from './src/cache.js';
 import { attachRole, createSession, clearSession, verifyAdminPassword } from './src/auth.js';
@@ -74,6 +74,7 @@ async function syncLocation(loc) {
       locationId: loc.id,
       locationName: loc.name,
       fieldNames: cfg.fieldNames,
+      allowMonetaryFallback: cfg.allowMonetaryFallback,
     });
   });
 
@@ -179,6 +180,39 @@ app.get('/api/leaderboard', async (req, res) => {
     const leaderboard = aggregateByBroker(inRange, { includeCommission: isAdmin });
     const totals = buildTotals(inRange, { includeCommission: isAdmin });
 
+    /**
+     * Surface mapping failures rather than rendering confident wrong numbers.
+     * A board showing $0 funded, or funded totals that are really commission,
+     * is worse than a board that says so.
+     */
+    const health = fieldHealth(inRange);
+    if (health.total > 0) {
+      if (health.fundedMissing === health.total) {
+        warnings.push(
+          'No "Funded Amount" custom field matched any deal — funded totals are $0. ' +
+          'Check /api/diagnostics for the real field names, then set FIELD_FUNDED_AMOUNT.'
+        );
+      } else if (health.fundedMissing > 0) {
+        warnings.push(
+          `${health.fundedMissing} of ${health.total} deals have no Funded Amount value.`
+        );
+      }
+
+      if (health.fundedFallback > 0) {
+        warnings.push(
+          `${health.fundedFallback} deal(s) fell back to the opportunity value for Funded Amount — ` +
+          'this is often the commission, not the deal size. Verify before trusting funded totals.'
+        );
+      }
+
+      if (isAdmin && health.commissionResolved === 0) {
+        warnings.push(
+          'No "Commission Amount" custom field matched — commission totals are $0. ' +
+          'Check /api/diagnostics and set FIELD_COMMISSION.'
+        );
+      }
+    }
+
     // Deal-level detail. Commission and fee are stripped for viewers.
     const deals = inRange
       .map((r) => {
@@ -224,13 +258,18 @@ app.post('/api/refresh', (req, res) => {
   res.json({ ok: true });
 });
 
-/** Diagnostic: shows what custom fields we can actually see on a sample deal. */
+/**
+ * Shows exactly how each money field resolved, and every custom field name
+ * actually present on your opportunities — so a mapping miss is a two-minute
+ * fix instead of a guessing game.
+ */
 app.get('/api/diagnostics', async (req, res) => {
   if (req.role !== 'admin') {
     return res.status(403).json({ error: 'Admin only.' });
   }
 
   const out = [];
+
   for (const loc of cfg.locations) {
     try {
       const stage = await resolveFundedStage({
@@ -238,21 +277,72 @@ app.get('/api/diagnostics', async (req, res) => {
         locationId: loc.id,
         stageName: cfg.fundedStageName,
       });
+
       const rows = await syncLocation(loc);
+      const health = fieldHealth(rows);
+      const sample = rows[0] || null;
+
       out.push({
         location: loc.name,
-        resolvedStage: stage,
+        resolvedStage: {
+          pipeline: stage.pipelineName,
+          stage: stage.stageName,
+          stageId: stage.stageId,
+        },
         dealCount: rows.length,
-        sample: rows[0] || null,
-        missingFundedDate: rows.filter((r) => !r.fundedDate).length,
-        zeroFundedAmount: rows.filter((r) => !r.fundedAmount).length,
+
+        fieldResolution: {
+          fundedAmount: {
+            resolvedFromCustomField: health.fundedResolved,
+            usedOpportunityValueFallback: health.fundedFallback,
+            noValueFound: health.fundedMissing,
+            matchedFieldNames: health.resolvedVia.fundedAmount,
+          },
+          commission: {
+            resolved: health.commissionResolved,
+            matchedFieldNames: health.resolvedVia.commission,
+          },
+          fee: {
+            resolved: health.feeResolved,
+            matchedFieldNames: health.resolvedVia.fee,
+          },
+        },
+
+        // The answer to "what are my fields actually called?"
+        customFieldNamesInYourGHL: health.availableFields,
+
+        sampleDeal: sample && {
+          broker: sample.broker,
+          businessName: sample.businessName,
+          fundedAmount: sample.fundedAmount,
+          commission: sample.commission,
+          fee: sample.fee,
+          lender: sample.lender,
+          fundedDate: sample.fundedDate,
+          opportunityValue: sample.monetaryValue,
+          resolvedFrom: sample._sources,
+        },
+
+        dataQuality: {
+          missingFundedDate: rows.filter((r) => !r.fundedDate).length,
+          zeroFundedAmount: rows.filter((r) => !r.fundedAmount).length,
+          zeroCommission: rows.filter((r) => !r.commission).length,
+          unassignedBroker: rows.filter((r) => r.broker === 'Unassigned').length,
+        },
       });
     } catch (err) {
       out.push({ location: loc.name, error: err.message });
     }
   }
 
-  res.json({ fieldNames: cfg.fieldNames, locations: out });
+  res.json({
+    configuredFieldNames: cfg.fieldNames,
+    monetaryValueFallbackEnabled: cfg.allowMonetaryFallback,
+    hint:
+      'If fundedAmount shows 0 or matches your commission, find the correct name in ' +
+      'customFieldNamesInYourGHL and set it as FIELD_FUNDED_AMOUNT in Railway.',
+    locations: out,
+  });
 });
 
 app.get('/healthz', (_req, res) => res.json({ ok: true }));

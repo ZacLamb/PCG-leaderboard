@@ -58,6 +58,20 @@ function pick(cfMap, candidates) {
 }
 
 /**
+ * Same as pick(), but reports which candidate name actually matched.
+ * Provenance matters for the money fields: if "Funded Amount" doesn't resolve
+ * and we quietly substitute something else, every number on the board is wrong
+ * in a way nobody can see. Returning the source lets diagnostics show it.
+ */
+function pickWithSource(cfMap, candidates) {
+  for (const c of candidates) {
+    const v = cfMap[normKey(c)];
+    if (v !== undefined && v !== '') return { value: v, source: c };
+  }
+  return { value: '', source: null };
+}
+
+/**
  * Determine the date an opportunity entered the funded stage.
  *
  * Preference order:
@@ -86,10 +100,10 @@ function resolveFundedDate(opp, cfMap, fieldNames) {
 /**
  * @param {object[]} opportunities raw GHL opportunities
  * @param {object}   users         userId -> { name, email }
- * @param {object}   opts          { locationId, locationName, fieldNames }
+ * @param {object}   opts          { locationId, locationName, fieldNames, allowMonetaryFallback }
  */
 export function normalizeOpportunities(opportunities, users, opts) {
-  const { locationId, locationName, fieldNames } = opts;
+  const { locationId, locationName, fieldNames, allowMonetaryFallback = false } = opts;
   const rows = [];
 
   for (const opp of opportunities) {
@@ -108,6 +122,25 @@ export function normalizeOpportunities(opportunities, users, opts) {
       contact.name ||
       '—';
 
+    /**
+     * Funded amount is the deal size — what the merchant received. It is NOT
+     * the opportunity's monetaryValue: in most MCA setups that field holds the
+     * commission or the brokerage's revenue, so substituting it silently would
+     * make "Total Funded" read as commission. We only fall back to it when
+     * explicitly allowed, and we record that we did.
+     */
+    const fundedPick = pickWithSource(cfMap, fieldNames.fundedAmount);
+    let fundedAmount = parseAmount(fundedPick.value);
+    let fundedSource = fundedPick.source;
+
+    if (!fundedSource && allowMonetaryFallback && opp.monetaryValue) {
+      fundedAmount = parseAmount(opp.monetaryValue);
+      fundedSource = 'monetaryValue (FALLBACK — may be commission, not deal size)';
+    }
+
+    const commissionPick = pickWithSource(cfMap, fieldNames.commission);
+    const feePick = pickWithSource(cfMap, fieldNames.fee);
+
     rows.push({
       id: opp.id,
       locationId,
@@ -115,12 +148,25 @@ export function normalizeOpportunities(opportunities, users, opts) {
       broker: owner ? owner.name : 'Unassigned',
       brokerId: ownerId || null,
       businessName: String(businessName).trim(),
-      fundedAmount: parseAmount(pick(cfMap, fieldNames.fundedAmount) || opp.monetaryValue),
-      commission: parseAmount(pick(cfMap, fieldNames.commission)),
-      fee: parseAmount(pick(cfMap, fieldNames.fee)),
+      fundedAmount,
+      commission: parseAmount(commissionPick.value),
+      fee: parseAmount(feePick.value),
       lender: String(pick(cfMap, fieldNames.lender) || '—').trim(),
       fundedDate: resolveFundedDate(opp, cfMap, fieldNames),
       status: opp.status || '',
+      monetaryValue: parseAmount(opp.monetaryValue),
+      // Where each money figure came from. Consumed by /api/diagnostics only;
+      // stripped before anything reaches the dashboard.
+      _sources: {
+        fundedAmount: fundedSource,
+        commission: commissionPick.source,
+        fee: feePick.source,
+      },
+      // Every custom field name this opportunity actually carries, so
+      // diagnostics can show the real names when a mapping misses.
+      _availableFields: (opp.customFields || []).map(
+        (f) => f.name || f.fieldKey || f.key || f.id
+      ).filter(Boolean),
     });
   }
 
@@ -202,4 +248,54 @@ export function buildTotals(rows, { includeCommission }) {
   }
 
   return totals;
+}
+
+/**
+ * Summarize how well the custom field mapping resolved.
+ *
+ * The failure mode this guards against is silent and total: if "Funded Amount"
+ * never matches, every figure on the board is wrong but the page looks fine.
+ * This turns that into something the dashboard can say out loud.
+ */
+export function fieldHealth(rows) {
+  if (!rows.length) {
+    return { total: 0, fundedResolved: 0, fundedFallback: 0, fundedMissing: 0,
+             commissionResolved: 0, feeResolved: 0, availableFields: [], resolvedVia: {} };
+  }
+
+  const fieldSet = new Set();
+  const resolvedVia = { fundedAmount: new Set(), commission: new Set(), fee: new Set() };
+
+  let fundedResolved = 0, fundedFallback = 0, fundedMissing = 0;
+  let commissionResolved = 0, feeResolved = 0;
+
+  for (const r of rows) {
+    const s = r._sources || {};
+    (r._availableFields || []).forEach((f) => fieldSet.add(f));
+
+    if (!s.fundedAmount) fundedMissing++;
+    else if (s.fundedAmount.startsWith('monetaryValue')) fundedFallback++;
+    else { fundedResolved++; resolvedVia.fundedAmount.add(s.fundedAmount); }
+
+    if (s.commission) { commissionResolved++; resolvedVia.commission.add(s.commission); }
+    if (s.fee) { feeResolved++; resolvedVia.fee.add(s.fee); }
+  }
+
+  return {
+    total: rows.length,
+    fundedResolved, fundedFallback, fundedMissing,
+    commissionResolved, feeResolved,
+    availableFields: [...fieldSet].sort(),
+    resolvedVia: {
+      fundedAmount: [...resolvedVia.fundedAmount],
+      commission: [...resolvedVia.commission],
+      fee: [...resolvedVia.fee],
+    },
+  };
+}
+
+/** Remove internal diagnostic keys before sending rows anywhere user-facing. */
+export function stripInternals(row) {
+  const { _sources, _availableFields, ...clean } = row;
+  return clean;
 }
