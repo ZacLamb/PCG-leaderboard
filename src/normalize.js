@@ -100,10 +100,10 @@ function resolveFundedDate(opp, cfMap, fieldNames) {
 /**
  * @param {object[]} opportunities raw GHL opportunities
  * @param {object}   users         userId -> { name, email }
- * @param {object}   opts          { locationId, locationName, fieldNames, allowMonetaryFallback }
+ * @param {object}   opts          { locationId, locationName, fieldNames, useOpportunityValue }
  */
 export function normalizeOpportunities(opportunities, users, opts) {
-  const { locationId, locationName, fieldNames, allowMonetaryFallback = false } = opts;
+  const { locationId, locationName, fieldNames, useOpportunityValue = true } = opts;
   const rows = [];
 
   for (const opp of opportunities) {
@@ -123,19 +123,21 @@ export function normalizeOpportunities(opportunities, users, opts) {
       '—';
 
     /**
-     * Funded amount is the deal size — what the merchant received. It is NOT
-     * the opportunity's monetaryValue: in most MCA setups that field holds the
-     * commission or the brokerage's revenue, so substituting it silently would
-     * make "Total Funded" read as commission. We only fall back to it when
-     * explicitly allowed, and we record that we did.
+     * Funded amount is the deal size. It resolves from a "Funded Amount"
+     * custom field if one exists, otherwise from the opportunity's own value
+     * field — which is where PCG records it on the opportunity card.
+     *
+     * The source is recorded either way so /api/diagnostics can show which one
+     * a given deal used, and so a deal with neither reads as $0 rather than
+     * silently borrowing a number from somewhere else.
      */
     const fundedPick = pickWithSource(cfMap, fieldNames.fundedAmount);
     let fundedAmount = parseAmount(fundedPick.value);
     let fundedSource = fundedPick.source;
 
-    if (!fundedSource && allowMonetaryFallback && opp.monetaryValue) {
+    if (!fundedSource && useOpportunityValue && opp.monetaryValue) {
       fundedAmount = parseAmount(opp.monetaryValue);
-      fundedSource = 'monetaryValue (FALLBACK — may be commission, not deal size)';
+      fundedSource = 'opportunity value';
     }
 
     const commissionPick = pickWithSource(cfMap, fieldNames.commission);
@@ -259,14 +261,14 @@ export function buildTotals(rows, { includeCommission }) {
  */
 export function fieldHealth(rows) {
   if (!rows.length) {
-    return { total: 0, fundedResolved: 0, fundedFallback: 0, fundedMissing: 0,
+    return { total: 0, fundedFromField: 0, fundedFromOppValue: 0, fundedMissing: 0,
              commissionResolved: 0, feeResolved: 0, availableFields: [], resolvedVia: {} };
   }
 
   const fieldSet = new Set();
   const resolvedVia = { fundedAmount: new Set(), commission: new Set(), fee: new Set() };
 
-  let fundedResolved = 0, fundedFallback = 0, fundedMissing = 0;
+  let fundedFromField = 0, fundedFromOppValue = 0, fundedMissing = 0;
   let commissionResolved = 0, feeResolved = 0;
 
   for (const r of rows) {
@@ -274,8 +276,8 @@ export function fieldHealth(rows) {
     (r._availableFields || []).forEach((f) => fieldSet.add(f));
 
     if (!s.fundedAmount) fundedMissing++;
-    else if (s.fundedAmount.startsWith('monetaryValue')) fundedFallback++;
-    else { fundedResolved++; resolvedVia.fundedAmount.add(s.fundedAmount); }
+    else if (s.fundedAmount === 'opportunity value') fundedFromOppValue++;
+    else { fundedFromField++; resolvedVia.fundedAmount.add(s.fundedAmount); }
 
     if (s.commission) { commissionResolved++; resolvedVia.commission.add(s.commission); }
     if (s.fee) { feeResolved++; resolvedVia.fee.add(s.fee); }
@@ -283,7 +285,7 @@ export function fieldHealth(rows) {
 
   return {
     total: rows.length,
-    fundedResolved, fundedFallback, fundedMissing,
+    fundedFromField, fundedFromOppValue, fundedMissing,
     commissionResolved, feeResolved,
     availableFields: [...fieldSet].sort(),
     resolvedVia: {

@@ -74,7 +74,7 @@ async function syncLocation(loc) {
       locationId: loc.id,
       locationName: loc.name,
       fieldNames: cfg.fieldNames,
-      allowMonetaryFallback: cfg.allowMonetaryFallback,
+      useOpportunityValue: cfg.useOpportunityValue,
     });
   });
 
@@ -181,27 +181,20 @@ app.get('/api/leaderboard', async (req, res) => {
     const totals = buildTotals(inRange, { includeCommission: isAdmin });
 
     /**
-     * Surface mapping failures rather than rendering confident wrong numbers.
-     * A board showing $0 funded, or funded totals that are really commission,
-     * is worse than a board that says so.
+     * Warn only on genuine gaps. A deal reading its amount from the
+     * opportunity value field is normal here, so that is not flagged —
+     * a banner that fires on every deal teaches people to ignore banners.
      */
     const health = fieldHealth(inRange);
     if (health.total > 0) {
       if (health.fundedMissing === health.total) {
         warnings.push(
-          'No "Funded Amount" custom field matched any deal — funded totals are $0. ' +
-          'Check /api/diagnostics for the real field names, then set FIELD_FUNDED_AMOUNT.'
+          'No funded amount found on any deal — totals are $0. ' +
+          'Check /api/diagnostics to see what the opportunities actually carry.'
         );
       } else if (health.fundedMissing > 0) {
         warnings.push(
-          `${health.fundedMissing} of ${health.total} deals have no Funded Amount value.`
-        );
-      }
-
-      if (health.fundedFallback > 0) {
-        warnings.push(
-          `${health.fundedFallback} deal(s) fell back to the opportunity value for Funded Amount — ` +
-          'this is often the commission, not the deal size. Verify before trusting funded totals.'
+          `${health.fundedMissing} of ${health.total} deals have no funded amount set in GHL.`
         );
       }
 
@@ -293,8 +286,8 @@ app.get('/api/diagnostics', async (req, res) => {
 
         fieldResolution: {
           fundedAmount: {
-            resolvedFromCustomField: health.fundedResolved,
-            usedOpportunityValueFallback: health.fundedFallback,
+            fromCustomField: health.fundedFromField,
+            fromOpportunityValue: health.fundedFromOppValue,
             noValueFound: health.fundedMissing,
             matchedFieldNames: health.resolvedVia.fundedAmount,
           },
@@ -337,10 +330,10 @@ app.get('/api/diagnostics', async (req, res) => {
 
   res.json({
     configuredFieldNames: cfg.fieldNames,
-    monetaryValueFallbackEnabled: cfg.allowMonetaryFallback,
+    usesOpportunityValueForFunded: cfg.useOpportunityValue,
     hint:
-      'If fundedAmount shows 0 or matches your commission, find the correct name in ' +
-      'customFieldNamesInYourGHL and set it as FIELD_FUNDED_AMOUNT in Railway.',
+      'fundedAmount reads the opportunity value unless a Funded Amount custom field ' +
+      'is present. If a figure looks wrong, check resolvedFrom on the sample deal.',
     locations: out,
   });
 });

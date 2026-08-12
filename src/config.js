@@ -54,13 +54,12 @@ export function loadConfig() {
     barMax: Number(process.env.BAR_MAX) || 30000,
 
     /**
-     * Whether a missing "Funded Amount" custom field may fall back to the
-     * opportunity's monetaryValue. Off by default: in most MCA pipelines that
-     * field holds commission or brokerage revenue, so falling back silently
-     * turns "Total Funded" into a commission total with no visible sign.
-     * Set ALLOW_MONETARY_VALUE_FALLBACK=true only if you know it holds deal size.
+     * Whether the opportunity's own value field counts as the funded amount
+     * when no "Funded Amount" custom field is present. True for PCG — that is
+     * where funded amount lives on the opportunity card. Set
+     * USE_OPPORTUNITY_VALUE=false to require a custom field instead.
      */
-    allowMonetaryFallback: String(process.env.ALLOW_MONETARY_VALUE_FALLBACK || '').toLowerCase() === 'true',
+    useOpportunityValue: String(process.env.USE_OPPORTUNITY_VALUE || 'true').toLowerCase() !== 'false',
 
     /**
      * Custom field names to look for, in priority order. Matching is
