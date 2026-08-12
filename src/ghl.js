@@ -115,17 +115,22 @@ export async function fetchOpportunities({ token, locationId, pipelineId, stageI
 }
 
 /**
- * Custom field definitions for a location.
+ * Custom field definitions for a location, restricted to opportunity fields.
  *
- * This is required, not optional: opportunity payloads return custom fields as
- * { id, fieldValue } with no name attached, so without this map there is no way
- * to tell "Funded Amount" from "Turnover". Returns fieldId -> { name, fieldKey }.
+ * Two things make this necessary:
+ *
+ * 1. Opportunity payloads return custom fields as { id, fieldValue } with no
+ *    name, so without this map there is no way to tell "Funded Amount" from
+ *    "Turnover".
+ * 2. The same display name often exists on BOTH models — PCG has a "Funded
+ *    Amount" on contact (contact.funded_amount) and another on opportunity
+ *    (opportunity.funded_amount). Matching on display name alone could bind to
+ *    the contact field and silently read the wrong number, so anything that
+ *    isn't an opportunity field is dropped here.
+ *
+ * Returns fieldId -> { name, fieldKey, model }.
  */
 export async function fetchCustomFieldDefs({ token, locationId }) {
-  const map = {};
-
-  // Opportunity-model fields are what we need, but the param is inconsistent
-  // across GHL versions — ask for all and filter locally.
   let data;
   try {
     data = await ghlFetch(`/locations/${locationId}/customFields`, {
@@ -134,7 +139,7 @@ export async function fetchCustomFieldDefs({ token, locationId }) {
       params: { model: 'opportunity' },
     });
   } catch {
-    // Some accounts reject the model filter; retry unfiltered.
+    // Some accounts reject the model filter; retry unfiltered and filter below.
     data = await ghlFetch(`/locations/${locationId}/customFields`, {
       token,
       locationId,
@@ -142,14 +147,38 @@ export async function fetchCustomFieldDefs({ token, locationId }) {
   }
 
   const fields = data.customFields || data.customField || [];
+  const map = {};
+  let skippedNonOpportunity = 0;
+
   for (const f of fields) {
     if (!f.id) continue;
+
+    const fieldKey = f.fieldKey || f.key || '';
+    const model = f.model || f.objectType || '';
+
+    // Trust whichever signal is present: the explicit model, or the fieldKey
+    // prefix ("opportunity.funded_amount" vs "contact.funded_amount").
+    const isOpportunity = model
+      ? String(model).toLowerCase() === 'opportunity'
+      : fieldKey.startsWith('opportunity.');
+
+    if (!isOpportunity) {
+      skippedNonOpportunity++;
+      continue;
+    }
+
     map[f.id] = {
-      name: f.name || f.fieldKey || f.key || '',
-      fieldKey: f.fieldKey || f.key || '',
-      model: f.model || f.objectType || '',
+      name: f.name || fieldKey,
+      fieldKey,
+      model: model || 'opportunity',
     };
   }
+
+  // Non-enumerable so it never shows up in JSON responses.
+  Object.defineProperty(map, '__meta', {
+    value: { total: fields.length, kept: Object.keys(map).length, skippedNonOpportunity },
+    enumerable: false,
+  });
 
   return map;
 }

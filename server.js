@@ -77,6 +77,7 @@ async function syncLocation(loc) {
       locationName: loc.name,
       fieldNames: cfg.fieldNames,
       fieldDefs,
+      fieldIds: loc.fieldIds,
       commissionFromValue: cfg.commissionFromValue,
     });
   });

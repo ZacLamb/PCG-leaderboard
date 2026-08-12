@@ -6,6 +6,27 @@
  * custom fields — which is common when two sub-accounts were built separately.
  */
 
+/**
+ * Field keys, matched before display names.
+ *
+ * A key like "opportunity.funded_amount" states its model explicitly, so it
+ * can't collide with the identically-named contact field. Keys are also
+ * derived from the field name, so they're consistent across both sub-accounts
+ * — unlike field IDs, which differ per location.
+ *
+ * funded_amount, fee, and lenders_funded are confirmed against both offices.
+ * business_name is inferred from GHL's naming convention; the display-name
+ * fallback below covers it if wrong.
+ */
+export const FIELD_KEYS = {
+  fundedAmount: ['opportunity.funded_amount'],
+  commission:   ['opportunity.commission_amount', 'opportunity.commission'],
+  fee:          ['opportunity.fee'],
+  lender:       ['opportunity.lenders_funded', 'opportunity.lender_s_funded', 'opportunity.lender'],
+  businessName: ['opportunity.business_name'],
+  fundedDate:   ['opportunity.funded_date'],
+};
+
 function splitNames(value, fallback) {
   const list = String(value || '')
     .split(',')
@@ -40,6 +61,20 @@ export function loadConfig() {
       // Optional: pin an exact pipeline/stage instead of resolving by name.
       pipelineId: process.env[`${office.slot}_PIPELINE_ID`] || null,
       stageId: process.env[`${office.slot}_STAGE_ID`] || null,
+      /**
+       * Optional exact custom field IDs, e.g. NY_FIELD_ID_FUNDED_AMOUNT.
+       * These are per-office because field IDs differ between sub-accounts
+       * even when the field names match. Highest priority of all — use when
+       * name and key matching both land on the wrong field.
+       */
+      fieldIds: {
+        fundedAmount: process.env[`${office.slot}_FIELD_ID_FUNDED_AMOUNT`] || null,
+        commission:   process.env[`${office.slot}_FIELD_ID_COMMISSION`] || null,
+        fee:          process.env[`${office.slot}_FIELD_ID_FEE`] || null,
+        lender:       process.env[`${office.slot}_FIELD_ID_LENDER`] || null,
+        businessName: process.env[`${office.slot}_FIELD_ID_BUSINESS_NAME`] || null,
+        fundedDate:   process.env[`${office.slot}_FIELD_ID_FUNDED_DATE`] || null,
+      },
     });
   }
 
@@ -61,32 +96,32 @@ export function loadConfig() {
     commissionFromValue: String(process.env.COMMISSION_FROM_VALUE || 'true').toLowerCase() !== 'false',
 
     /**
-     * Custom field names to look for, in priority order. Matching ignores
-     * case, spaces, and punctuation, so "Lender/s Funded" and "lenders_funded"
-     * both resolve. Defaults reflect the fields on PCG's opportunity card.
+     * Candidates for each value, tried in order. Field keys come first because
+     * they name their model explicitly ("opportunity.funded_amount"), which
+     * avoids binding to a same-named contact field. Display names follow as a
+     * fallback. Matching ignores case, spaces, and punctuation.
      */
     fieldNames: {
-      fundedAmount: splitNames(process.env.FIELD_FUNDED_AMOUNT, [
+      fundedAmount: [...FIELD_KEYS.fundedAmount, ...splitNames(process.env.FIELD_FUNDED_AMOUNT, [
         'Funded Amount', 'funded_amount', 'Amount Funded', 'Deal Size',
-      ]),
+      ])],
       // PCG records commission in the opportunity's Value field, so this list
       // is only used if a dedicated commission field is added later.
-      commission: splitNames(process.env.FIELD_COMMISSION, [
+      commission: [...FIELD_KEYS.commission, ...splitNames(process.env.FIELD_COMMISSION, [
         'Commission Amount', 'Commision Amount', 'commission_amount', 'Commission',
-      ]),
-      fee: splitNames(process.env.FIELD_FEE, [
+      ])],
+      fee: [...FIELD_KEYS.fee, ...splitNames(process.env.FIELD_FEE, [
         'Fee', 'FEE', 'fee', 'PSF', 'Fee Amount',
-      ]),
-      lender: splitNames(process.env.FIELD_LENDER, [
-        'Lender/s Funded', 'Lenders Funded', 'lender_s_funded',
-        'Lender', 'lender', 'Lenders', 'Lender/s', 'Funder',
-      ]),
-      businessName: splitNames(process.env.FIELD_BUSINESS_NAME, [
+      ])],
+      lender: [...FIELD_KEYS.lender, ...splitNames(process.env.FIELD_LENDER, [
+        'Lender/s Funded', 'Lenders Funded', 'Lender', 'Lenders', 'Lender/s', 'Funder',
+      ])],
+      businessName: [...FIELD_KEYS.businessName, ...splitNames(process.env.FIELD_BUSINESS_NAME, [
         'Business name', 'Business Name', 'business_name', 'Company Name', 'DBA',
-      ]),
-      fundedDate: splitNames(process.env.FIELD_FUNDED_DATE, [
+      ])],
+      fundedDate: [...FIELD_KEYS.fundedDate, ...splitNames(process.env.FIELD_FUNDED_DATE, [
         'Funded Date', 'funded_date', 'Date Funded',
-      ]),
+      ])],
     },
   };
 }

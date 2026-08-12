@@ -74,7 +74,7 @@ function pick(cfMap, candidates) {
 }
 
 /**
- * Same as pick(), but reports which candidate name actually matched.
+ * Same as pick(), but reports which candidate actually matched.
  * Provenance matters for the money fields: if "Funded Amount" doesn't resolve
  * and we quietly substitute something else, every number on the board is wrong
  * in a way nobody can see. Returning the source lets diagnostics show it.
@@ -88,6 +88,34 @@ function pickWithSource(cfMap, candidates) {
 }
 
 /**
+ * Read a value by exact custom field ID. Highest priority — an ID names one
+ * specific field on one specific sub-account, so it cannot collide with a
+ * same-named field on another model.
+ */
+function pickById(opp, fieldId) {
+  if (!fieldId) return { value: '', source: null };
+  const fields = opp.customFields || opp.customField || [];
+  for (const f of fields) {
+    if (f.id !== fieldId) continue;
+    const v =
+      f.fieldValue !== undefined ? f.fieldValue :
+      f.value !== undefined ? f.value :
+      f.fieldValueString !== undefined ? f.fieldValueString : '';
+    if (v !== '' && v !== null && v !== undefined) {
+      return { value: v, source: `field id ${fieldId}` };
+    }
+  }
+  return { value: '', source: null };
+}
+
+/** Try an exact field ID first, then fall back to key/name candidates. */
+function resolveField(opp, cfMap, fieldId, candidates) {
+  const byId = pickById(opp, fieldId);
+  if (byId.source) return byId;
+  return pickWithSource(cfMap, candidates);
+}
+
+/**
  * Determine the date an opportunity entered the funded stage.
  *
  * Preference order:
@@ -96,8 +124,8 @@ function pickWithSource(cfMap, candidates) {
  *      we only query the Funded stage, this is the date it landed there.
  *   3. updatedAt, then createdAt, as last resorts.
  */
-function resolveFundedDate(opp, cfMap, fieldNames) {
-  const custom = pick(cfMap, fieldNames.fundedDate);
+function resolveFundedDate(opp, cfMap, fieldNames, fieldIds = {}) {
+  const custom = resolveField(opp, cfMap, fieldIds.fundedDate, fieldNames.fundedDate).value;
   if (custom) {
     const d = new Date(custom);
     if (!isNaN(d.getTime())) return d.toISOString();
@@ -124,6 +152,7 @@ export function normalizeOpportunities(opportunities, users, opts) {
     locationName,
     fieldNames,
     fieldDefs = {},
+    fieldIds = {},
     commissionFromValue = true,
   } = opts;
   const rows = [];
@@ -141,7 +170,7 @@ export function normalizeOpportunities(opportunities, users, opts) {
      */
     const contact = opp.contact || {};
     const businessName =
-      pick(cfMap, fieldNames.businessName) ||
+      resolveField(opp, cfMap, fieldIds.businessName, fieldNames.businessName).value ||
       contact.companyName ||
       contact.company ||
       opp.name ||
@@ -154,14 +183,14 @@ export function normalizeOpportunities(opportunities, users, opts) {
      * never substituted here — doing so would report commission as funded
      * volume, off by roughly an order of magnitude.
      */
-    const fundedPick = pickWithSource(cfMap, fieldNames.fundedAmount);
+    const fundedPick = resolveField(opp, cfMap, fieldIds.fundedAmount, fieldNames.fundedAmount);
     const fundedAmount = parseAmount(fundedPick.value);
 
     /**
      * Commission is the opportunity's Value field. If a dedicated commission
      * custom field exists it wins, so this keeps working if one is added later.
      */
-    const commissionPick = pickWithSource(cfMap, fieldNames.commission);
+    const commissionPick = resolveField(opp, cfMap, fieldIds.commission, fieldNames.commission);
     let commission = parseAmount(commissionPick.value);
     let commissionSource = commissionPick.source;
 
@@ -170,7 +199,7 @@ export function normalizeOpportunities(opportunities, users, opts) {
       commissionSource = 'opportunity Value field';
     }
 
-    const feePick = pickWithSource(cfMap, fieldNames.fee);
+    const feePick = resolveField(opp, cfMap, fieldIds.fee, fieldNames.fee);
 
     rows.push({
       id: opp.id,
@@ -182,8 +211,8 @@ export function normalizeOpportunities(opportunities, users, opts) {
       fundedAmount,
       commission,
       fee: parseAmount(feePick.value),
-      lender: String(pick(cfMap, fieldNames.lender) || '—').trim(),
-      fundedDate: resolveFundedDate(opp, cfMap, fieldNames),
+      lender: String(resolveField(opp, cfMap, fieldIds.lender, fieldNames.lender).value || '—').trim(),
+      fundedDate: resolveFundedDate(opp, cfMap, fieldNames, fieldIds),
       status: opp.status || '',
       monetaryValue: parseAmount(opp.monetaryValue),
       // Where each money figure came from. Consumed by /api/diagnostics only;
