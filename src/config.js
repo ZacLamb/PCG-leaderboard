@@ -54,22 +54,23 @@ export function loadConfig() {
     barMax: Number(process.env.BAR_MAX) || 30000,
 
     /**
-     * Whether the opportunity's own value field counts as the funded amount
-     * when no "Funded Amount" custom field is present. True for PCG — that is
-     * where funded amount lives on the opportunity card. Set
-     * USE_OPPORTUNITY_VALUE=false to require a custom field instead.
+     * Whether the opportunity's Value field holds the commission. True for PCG:
+     * the card shows Value = $2,700 against a Funded Amount of $30,000. A
+     * dedicated commission custom field, if one exists, always takes priority.
      */
-    useOpportunityValue: String(process.env.USE_OPPORTUNITY_VALUE || 'true').toLowerCase() !== 'false',
+    commissionFromValue: String(process.env.COMMISSION_FROM_VALUE || 'true').toLowerCase() !== 'false',
 
     /**
-     * Custom field names to look for, in priority order. Matching is
-     * case/space/punctuation-insensitive, so "Funded Amount", "funded_amount",
-     * and "FundedAmount" all resolve to the same field.
+     * Custom field names to look for, in priority order. Matching ignores
+     * case, spaces, and punctuation, so "Lender/s Funded" and "lenders_funded"
+     * both resolve. Defaults reflect the fields on PCG's opportunity card.
      */
     fieldNames: {
       fundedAmount: splitNames(process.env.FIELD_FUNDED_AMOUNT, [
         'Funded Amount', 'funded_amount', 'Amount Funded', 'Deal Size',
       ]),
+      // PCG records commission in the opportunity's Value field, so this list
+      // is only used if a dedicated commission field is added later.
       commission: splitNames(process.env.FIELD_COMMISSION, [
         'Commission Amount', 'Commision Amount', 'commission_amount', 'Commission',
       ]),
@@ -77,10 +78,11 @@ export function loadConfig() {
         'Fee', 'FEE', 'fee', 'PSF', 'Fee Amount',
       ]),
       lender: splitNames(process.env.FIELD_LENDER, [
+        'Lender/s Funded', 'Lenders Funded', 'lender_s_funded',
         'Lender', 'lender', 'Lenders', 'Lender/s', 'Funder',
       ]),
       businessName: splitNames(process.env.FIELD_BUSINESS_NAME, [
-        'Business Name', 'business_name', 'Company Name', 'DBA',
+        'Business name', 'Business Name', 'business_name', 'Company Name', 'DBA',
       ]),
       fundedDate: splitNames(process.env.FIELD_FUNDED_DATE, [
         'Funded Date', 'funded_date', 'Date Funded',

@@ -114,6 +114,46 @@ export async function fetchOpportunities({ token, locationId, pipelineId, stageI
   return all;
 }
 
+/**
+ * Custom field definitions for a location.
+ *
+ * This is required, not optional: opportunity payloads return custom fields as
+ * { id, fieldValue } with no name attached, so without this map there is no way
+ * to tell "Funded Amount" from "Turnover". Returns fieldId -> { name, fieldKey }.
+ */
+export async function fetchCustomFieldDefs({ token, locationId }) {
+  const map = {};
+
+  // Opportunity-model fields are what we need, but the param is inconsistent
+  // across GHL versions — ask for all and filter locally.
+  let data;
+  try {
+    data = await ghlFetch(`/locations/${locationId}/customFields`, {
+      token,
+      locationId,
+      params: { model: 'opportunity' },
+    });
+  } catch {
+    // Some accounts reject the model filter; retry unfiltered.
+    data = await ghlFetch(`/locations/${locationId}/customFields`, {
+      token,
+      locationId,
+    });
+  }
+
+  const fields = data.customFields || data.customField || [];
+  for (const f of fields) {
+    if (!f.id) continue;
+    map[f.id] = {
+      name: f.name || f.fieldKey || f.key || '',
+      fieldKey: f.fieldKey || f.key || '',
+      model: f.model || f.objectType || '',
+    };
+  }
+
+  return map;
+}
+
 /** Map of userId -> display name, for resolving the opportunity owner (broker). */
 export async function fetchUsers({ token, locationId }) {
   const data = await ghlFetch('/users/', {

@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { loadConfig, validateConfig } from './src/config.js';
-import { fetchOpportunities, fetchUsers, resolveFundedStage } from './src/ghl.js';
+import { fetchOpportunities, fetchUsers, resolveFundedStage, fetchCustomFieldDefs } from './src/ghl.js';
 import { normalizeOpportunities, aggregateByBroker, buildTotals, fieldHealth } from './src/normalize.js';
 import { resolveRange, availableMonths } from './src/dateRange.js';
 import { cached, getStale, invalidate, cacheMeta } from './src/cache.js';
@@ -65,16 +65,19 @@ async function syncLocation(loc) {
       }
     }
 
-    const [opportunities, users] = await Promise.all([
+    const [opportunities, users, fieldDefs] = await Promise.all([
       fetchOpportunities({ token: loc.token, locationId: loc.id, pipelineId, stageId }),
       fetchUsers({ token: loc.token, locationId: loc.id }),
+      // Required: opportunity payloads carry custom field IDs, not names.
+      fetchCustomFieldDefs({ token: loc.token, locationId: loc.id }),
     ]);
 
     return normalizeOpportunities(opportunities, users, {
       locationId: loc.id,
       locationName: loc.name,
       fieldNames: cfg.fieldNames,
-      useOpportunityValue: cfg.useOpportunityValue,
+      fieldDefs,
+      commissionFromValue: cfg.commissionFromValue,
     });
   });
 
@@ -189,19 +192,19 @@ app.get('/api/leaderboard', async (req, res) => {
     if (health.total > 0) {
       if (health.fundedMissing === health.total) {
         warnings.push(
-          'No funded amount found on any deal — totals are $0. ' +
-          'Check /api/diagnostics to see what the opportunities actually carry.'
+          'No "Funded Amount" custom field matched any deal — funded totals are $0. ' +
+          'Check /api/diagnostics for the real field names, then set FIELD_FUNDED_AMOUNT.'
         );
       } else if (health.fundedMissing > 0) {
         warnings.push(
-          `${health.fundedMissing} of ${health.total} deals have no funded amount set in GHL.`
+          `${health.fundedMissing} of ${health.total} deals have no Funded Amount set in GHL.`
         );
       }
 
-      if (isAdmin && health.commissionResolved === 0) {
+      if (isAdmin && health.commissionMissing === health.total) {
         warnings.push(
-          'No "Commission Amount" custom field matched — commission totals are $0. ' +
-          'Check /api/diagnostics and set FIELD_COMMISSION.'
+          'No commission value found on any deal — commission totals are $0. ' +
+          'Check /api/diagnostics to see what the opportunities carry.'
         );
       }
     }
@@ -286,13 +289,14 @@ app.get('/api/diagnostics', async (req, res) => {
 
         fieldResolution: {
           fundedAmount: {
-            fromCustomField: health.fundedFromField,
-            fromOpportunityValue: health.fundedFromOppValue,
+            resolvedFromCustomField: health.fundedResolved,
             noValueFound: health.fundedMissing,
             matchedFieldNames: health.resolvedVia.fundedAmount,
           },
           commission: {
-            resolved: health.commissionResolved,
+            fromCustomField: health.commissionFromField,
+            fromOpportunityValueField: health.commissionFromValue,
+            noValueFound: health.commissionMissing,
             matchedFieldNames: health.resolvedVia.commission,
           },
           fee: {
@@ -330,10 +334,11 @@ app.get('/api/diagnostics', async (req, res) => {
 
   res.json({
     configuredFieldNames: cfg.fieldNames,
-    usesOpportunityValueForFunded: cfg.useOpportunityValue,
+    commissionReadsOpportunityValueField: cfg.commissionFromValue,
     hint:
-      'fundedAmount reads the opportunity value unless a Funded Amount custom field ' +
-      'is present. If a figure looks wrong, check resolvedFrom on the sample deal.',
+      'Funded Amount comes from the custom field of that name. Commission comes from ' +
+      'the opportunity Value field. If a figure is wrong, compare resolvedFrom on the ' +
+      'sample deal against customFieldNamesInYourGHL.',
     locations: out,
   });
 });

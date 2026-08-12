@@ -22,10 +22,13 @@ function normKey(s) {
 
 /**
  * Build a lookup of normalized custom-field-name -> value for one opportunity.
- * GHL returns customFields as [{ id, fieldValue|value, fieldKey?, name? }].
- * We index by every identifier the payload gives us so name OR key both work.
+ *
+ * GHL v2 returns opportunity custom fields as { id, fieldValue } with no name,
+ * so `fieldDefs` (fieldId -> { name, fieldKey }) is what makes them readable.
+ * Anything the payload does carry inline is indexed too, so this still works if
+ * GHL starts including names.
  */
-function customFieldMap(opp) {
+function customFieldMap(opp, fieldDefs = {}) {
   const map = {};
   const fields = opp.customFields || opp.customField || [];
 
@@ -36,9 +39,22 @@ function customFieldMap(opp) {
       f.fieldValueString !== undefined ? f.fieldValueString :
       '';
 
-    for (const ident of [f.name, f.fieldKey, f.key, f.id]) {
+    if (value === '' || value === null || value === undefined) continue;
+
+    const def = f.id ? fieldDefs[f.id] : null;
+
+    const identifiers = [
+      def?.name,        // resolved via the definitions map — the usual path
+      def?.fieldKey,
+      f.name,           // inline, if GHL ever provides it
+      f.fieldKey,
+      f.key,
+      f.id,
+    ];
+
+    for (const ident of identifiers) {
       if (!ident) continue;
-      // fieldKey often looks like "opportunity.funded_amount" — index the tail too.
+      // fieldKey looks like "opportunity.funded_amount" — index the tail too.
       const tail = String(ident).split('.').pop();
       map[normKey(ident)] = value;
       map[normKey(tail)] = value;
@@ -100,47 +116,60 @@ function resolveFundedDate(opp, cfMap, fieldNames) {
 /**
  * @param {object[]} opportunities raw GHL opportunities
  * @param {object}   users         userId -> { name, email }
- * @param {object}   opts          { locationId, locationName, fieldNames, useOpportunityValue }
+ * @param {object}   opts          { locationId, locationName, fieldNames, fieldDefs, commissionFromValue }
  */
 export function normalizeOpportunities(opportunities, users, opts) {
-  const { locationId, locationName, fieldNames, useOpportunityValue = true } = opts;
+  const {
+    locationId,
+    locationName,
+    fieldNames,
+    fieldDefs = {},
+    commissionFromValue = true,
+  } = opts;
   const rows = [];
 
   for (const opp of opportunities) {
-    const cfMap = customFieldMap(opp);
+    const cfMap = customFieldMap(opp, fieldDefs);
 
     const ownerId = opp.assignedTo || opp.assigned_to || opp.userId || null;
     const owner = ownerId && users[ownerId] ? users[ownerId] : null;
 
-    // Business name: prefer the contact's company, fall back to opportunity name.
+    /**
+     * Business name is its own opportunity custom field here, which is more
+     * reliable than the contact's company — the contact record is often just
+     * the signer's personal details.
+     */
     const contact = opp.contact || {};
     const businessName =
+      pick(cfMap, fieldNames.businessName) ||
       contact.companyName ||
       contact.company ||
-      pick(cfMap, fieldNames.businessName) ||
       opp.name ||
       contact.name ||
       '—';
 
     /**
-     * Funded amount is the deal size. It resolves from a "Funded Amount"
-     * custom field if one exists, otherwise from the opportunity's own value
-     * field — which is where PCG records it on the opportunity card.
-     *
-     * The source is recorded either way so /api/diagnostics can show which one
-     * a given deal used, and so a deal with neither reads as $0 rather than
-     * silently borrowing a number from somewhere else.
+     * Funded amount is the deal size and lives ONLY in the "Funded Amount"
+     * custom field. The opportunity's Value field is the commission, so it is
+     * never substituted here — doing so would report commission as funded
+     * volume, off by roughly an order of magnitude.
      */
     const fundedPick = pickWithSource(cfMap, fieldNames.fundedAmount);
-    let fundedAmount = parseAmount(fundedPick.value);
-    let fundedSource = fundedPick.source;
+    const fundedAmount = parseAmount(fundedPick.value);
 
-    if (!fundedSource && useOpportunityValue && opp.monetaryValue) {
-      fundedAmount = parseAmount(opp.monetaryValue);
-      fundedSource = 'opportunity value';
+    /**
+     * Commission is the opportunity's Value field. If a dedicated commission
+     * custom field exists it wins, so this keeps working if one is added later.
+     */
+    const commissionPick = pickWithSource(cfMap, fieldNames.commission);
+    let commission = parseAmount(commissionPick.value);
+    let commissionSource = commissionPick.source;
+
+    if (!commissionSource && commissionFromValue && opp.monetaryValue) {
+      commission = parseAmount(opp.monetaryValue);
+      commissionSource = 'opportunity Value field';
     }
 
-    const commissionPick = pickWithSource(cfMap, fieldNames.commission);
     const feePick = pickWithSource(cfMap, fieldNames.fee);
 
     rows.push({
@@ -151,24 +180,24 @@ export function normalizeOpportunities(opportunities, users, opts) {
       brokerId: ownerId || null,
       businessName: String(businessName).trim(),
       fundedAmount,
-      commission: parseAmount(commissionPick.value),
+      commission,
       fee: parseAmount(feePick.value),
       lender: String(pick(cfMap, fieldNames.lender) || '—').trim(),
       fundedDate: resolveFundedDate(opp, cfMap, fieldNames),
       status: opp.status || '',
       monetaryValue: parseAmount(opp.monetaryValue),
       // Where each money figure came from. Consumed by /api/diagnostics only;
-      // stripped before anything reaches the dashboard.
+      // the client payload is built from an explicit allowlist.
       _sources: {
-        fundedAmount: fundedSource,
-        commission: commissionPick.source,
+        fundedAmount: fundedPick.source,
+        commission: commissionSource,
         fee: feePick.source,
       },
-      // Every custom field name this opportunity actually carries, so
-      // diagnostics can show the real names when a mapping misses.
-      _availableFields: (opp.customFields || []).map(
-        (f) => f.name || f.fieldKey || f.key || f.id
-      ).filter(Boolean),
+      // Every custom field name this opportunity carries, resolved through the
+      // definitions map — so diagnostics can show the real names.
+      _availableFields: (opp.customFields || [])
+        .map((f) => (f.id && fieldDefs[f.id]?.name) || f.name || f.fieldKey || f.id)
+        .filter(Boolean),
     });
   }
 
@@ -261,32 +290,37 @@ export function buildTotals(rows, { includeCommission }) {
  */
 export function fieldHealth(rows) {
   if (!rows.length) {
-    return { total: 0, fundedFromField: 0, fundedFromOppValue: 0, fundedMissing: 0,
-             commissionResolved: 0, feeResolved: 0, availableFields: [], resolvedVia: {} };
+    return { total: 0, fundedResolved: 0, fundedMissing: 0,
+             commissionFromField: 0, commissionFromValue: 0, commissionMissing: 0,
+             feeResolved: 0, availableFields: [], resolvedVia: {} };
   }
 
   const fieldSet = new Set();
   const resolvedVia = { fundedAmount: new Set(), commission: new Set(), fee: new Set() };
 
-  let fundedFromField = 0, fundedFromOppValue = 0, fundedMissing = 0;
-  let commissionResolved = 0, feeResolved = 0;
+  let fundedResolved = 0, fundedMissing = 0;
+  let commissionFromField = 0, commissionFromValue = 0, commissionMissing = 0;
+  let feeResolved = 0;
 
   for (const r of rows) {
     const s = r._sources || {};
     (r._availableFields || []).forEach((f) => fieldSet.add(f));
 
     if (!s.fundedAmount) fundedMissing++;
-    else if (s.fundedAmount === 'opportunity value') fundedFromOppValue++;
-    else { fundedFromField++; resolvedVia.fundedAmount.add(s.fundedAmount); }
+    else { fundedResolved++; resolvedVia.fundedAmount.add(s.fundedAmount); }
 
-    if (s.commission) { commissionResolved++; resolvedVia.commission.add(s.commission); }
+    if (!s.commission) commissionMissing++;
+    else if (s.commission === 'opportunity Value field') commissionFromValue++;
+    else { commissionFromField++; resolvedVia.commission.add(s.commission); }
+
     if (s.fee) { feeResolved++; resolvedVia.fee.add(s.fee); }
   }
 
   return {
     total: rows.length,
-    fundedFromField, fundedFromOppValue, fundedMissing,
-    commissionResolved, feeResolved,
+    fundedResolved, fundedMissing,
+    commissionFromField, commissionFromValue, commissionMissing,
+    feeResolved,
     availableFields: [...fieldSet].sort(),
     resolvedVia: {
       fundedAmount: [...resolvedVia.fundedAmount],
