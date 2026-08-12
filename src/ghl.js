@@ -13,6 +13,14 @@
 const API_BASE = 'https://services.leadconnectorhq.com';
 const API_VERSION = '2021-07-28';
 
+/**
+ * Where this module reports problems. The server swaps in a sink that also
+ * writes to the HTTP-readable log buffer, so a failing GHL call is visible
+ * without shell access to the container.
+ */
+let report = (msg) => console.log(msg);
+export function setLogger(fn) { report = fn; }
+
 /** Simple token-bucket throttle: max N requests per window, per key. */
 class Throttle {
   constructor(maxRequests = 80, windowMs = 10_000) {
@@ -73,7 +81,7 @@ async function ghlFetch(path, { token, locationId, params = {}, retries = 3 } = 
       // Surface the real reason in Railway logs — a 401 (bad token) and a 422
       // (bad params) need completely different fixes, and a silent throw makes
       // them indistinguishable.
-      console.error(`[GHL] ${res.status} ${path} — ${body.slice(0, 300)}`);
+      report(`[GHL] ${res.status} ${path} — ${body.slice(0, 300)}`);
       const err = new Error(`GHL ${res.status} on ${path}: ${body.slice(0, 300)}`);
       err.status = res.status;
       throw err;
@@ -114,7 +122,7 @@ export async function fetchOpportunities({ token, locationId, pipelineId, stageI
     // array, the query succeeded but we're reading the wrong key — worth
     // saying out loud rather than silently returning zero deals.
     if (page === 1 && !Array.isArray(data.opportunities)) {
-      console.error(
+      report(
         `[GHL] /opportunities/search returned no "opportunities" array. ` +
         `Top-level keys: ${Object.keys(data).join(', ')}`
       );
@@ -164,7 +172,7 @@ export async function fetchCustomFieldDefs({ token, locationId }) {
   const fields = data.customFields || data.customField || [];
 
   if (!Array.isArray(data.customFields) && !Array.isArray(data.customField)) {
-    console.error(
+    report(
       `[GHL] /locations/${locationId}/customFields returned no field array. ` +
       `Top-level keys: ${Object.keys(data).join(', ')}`
     );
@@ -177,7 +185,7 @@ export async function fetchCustomFieldDefs({ token, locationId }) {
       a[m] = (a[m] || 0) + 1;
       return a;
     }, {});
-    console.log(`[GHL] customFields for ${locationId}: ${fields.length} total ${JSON.stringify(byModel)}`);
+    report(`[GHL] customFields for ${locationId}: ${fields.length} total ${JSON.stringify(byModel)}`);
   }
 
   const map = {};

@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { loadConfig, validateConfig } from './src/config.js';
-import { fetchOpportunities, fetchUsers, resolveFundedStage, fetchCustomFieldDefs, enrichWithCustomFields } from './src/ghl.js';
+import { fetchOpportunities, fetchUsers, resolveFundedStage, fetchCustomFieldDefs, enrichWithCustomFields, setLogger } from './src/ghl.js';
 import { normalizeOpportunities, aggregateByBroker, buildTotals, fieldHealth } from './src/normalize.js';
 import { resolveRange, availableMonths } from './src/dateRange.js';
 import { cached, getStale, invalidate, cacheMeta } from './src/cache.js';
@@ -15,6 +15,23 @@ import { attachRole, createSession, clearSession, verifyAdminPassword } from './
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const cfg = loadConfig();
 const app = express();
+
+/**
+ * Ring buffer of recent sync output.
+ *
+ * Railway's log view isn't always reachable when you need it, and the admin
+ * cookie can be blocked inside an iframe — so the same lines are kept here and
+ * served over HTTP. Capped so a long-running container can't grow unbounded.
+ */
+const LOG_CAP = 400;
+const recentLogs = [];
+
+function logLine(msg) {
+  const line = `${new Date().toISOString().slice(11, 19)}  ${msg}`;
+  console.log(msg);
+  recentLogs.push(line);
+  if (recentLogs.length > LOG_CAP) recentLogs.splice(0, recentLogs.length - LOG_CAP);
+}
 
 // ── Boot validation ──────────────────────────────────────────────────────────
 const { errors: configErrors, warnings: configWarnings } = validateConfig(cfg);
@@ -32,6 +49,8 @@ if (configWarnings.length) {
   console.warn('');
 }
 
+setLogger(logLine); // GHL client errors land in the readable buffer too
+
 app.set('trust proxy', 1); // Railway sits behind a proxy
 app.use(express.json());
 app.use(cookieParser());
@@ -44,7 +63,7 @@ async function syncLocation(loc) {
   const key = `loc:${loc.id}`;
 
   const { value } = await cached(key, cfg.cacheTtlMs, async () => {
-    const log = (msg) => console.log(`[${loc.name}] ${msg}`);
+    const log = (msg) => logLine(`[${loc.name}] ${msg}`);
     log('─'.repeat(50));
     log(`Sync starting — location ${loc.id}`);
 
@@ -196,6 +215,15 @@ const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
   message: { error: 'Too many login attempts. Try again in 15 minutes.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// The key travels in the URL here, so rate-limit it like the login form.
+const selftestLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  message: { error: 'Too many attempts. Try again in 15 minutes.' },
   standardHeaders: true,
   legacyHeaders: false,
 });
@@ -443,6 +471,87 @@ app.get('/api/diagnostics', async (req, res) => {
       'sample deal against customFieldNamesInYourGHL.',
     locations: out,
   });
+});
+
+/**
+ * Self-test: forces a fresh sync and returns everything needed to diagnose it.
+ *
+ * Authenticated by ?key= rather than the session cookie, because the cookie is
+ * exactly what fails inside a GHL iframe or a browser blocking third-party
+ * cookies — and that's precisely when you most need to see what's happening.
+ * Same secret as the admin login, so it grants no additional access.
+ *
+ *   https://<your-app>.up.railway.app/api/selftest?key=YOUR_ADMIN_PASSWORD
+ */
+app.get('/api/selftest', selftestLimiter, async (req, res) => {
+  if (!verifyAdminPassword(req.query.key, cfg.adminPassword)) {
+    return res.status(401).json({
+      error: 'Add ?key=<your ADMIN_PASSWORD> to this URL.',
+    });
+  }
+
+  recentLogs.length = 0;
+  invalidate('loc:'); // force a real sync rather than reporting on cache
+
+  const out = { startedAt: new Date().toISOString(), locations: [] };
+
+  for (const loc of cfg.locations) {
+    const entry = { name: loc.name, locationId: loc.id, tokenPrefix: loc.token.slice(0, 8) + '…' };
+    try {
+      const rows = await syncLocation(loc);
+      const health = fieldHealth(rows);
+
+      entry.ok = true;
+      entry.dealCount = rows.length;
+      entry.fieldResolution = {
+        fundedAmount: {
+          resolved: health.fundedResolved,
+          missing: health.fundedMissing,
+          matchedVia: health.resolvedVia.fundedAmount,
+        },
+        commission: {
+          fromCustomField: health.commissionFromField,
+          fromOpportunityValueField: health.commissionFromValue,
+          missing: health.commissionMissing,
+        },
+        fee: { resolved: health.feeResolved, matchedVia: health.resolvedVia.fee },
+      };
+      entry.customFieldNamesSeenOnDeals = health.availableFields;
+      entry.statusBreakdown = rows.reduce((a, r) => {
+        const k = r.status || '(none)';
+        a[k] = (a[k] || 0) + 1;
+        return a;
+      }, {});
+      entry.sampleDeals = rows.slice(0, 3).map((r) => ({
+        broker: r.broker,
+        businessName: r.businessName,
+        fundedAmount: r.fundedAmount,
+        commission: r.commission,
+        fee: r.fee,
+        lender: r.lender,
+        fundedDate: r.fundedDate,
+        status: r.status,
+        opportunityValue: r.monetaryValue,
+        resolvedFrom: r._sources,
+      }));
+    } catch (err) {
+      entry.ok = false;
+      entry.error = err.message;
+      entry.status = err.status || null;
+    }
+    out.locations.push(entry);
+  }
+
+  out.config = {
+    fundedStageName: cfg.fundedStageName,
+    countedStatuses: cfg.opportunityStatuses,
+    commissionFromValueField: cfg.commissionFromValue,
+    timezone: cfg.tz,
+    fieldCandidates: cfg.fieldNames,
+  };
+  out.syncLog = recentLogs.slice();
+
+  res.json(out);
 });
 
 app.get('/healthz', (_req, res) => res.json({ ok: true }));
