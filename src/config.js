@@ -25,6 +25,7 @@ export const FIELD_KEYS = {
   lender:       ['opportunity.lenders_funded', 'opportunity.lender_s_funded', 'opportunity.lender'],
   businessName: ['opportunity.business_name'],
   fundedDate:   ['opportunity.funded_date'],
+  source:       ['opportunity.source', 'opportunity.lead_source'],
 };
 
 function splitNames(value, fallback) {
@@ -73,6 +74,7 @@ export function loadConfig() {
         fee:          process.env[`${office.slot}_FIELD_ID_FEE`] || null,
         lender:       process.env[`${office.slot}_FIELD_ID_LENDER`] || null,
         businessName: process.env[`${office.slot}_FIELD_ID_BUSINESS_NAME`] || null,
+        source:       process.env[`${office.slot}_FIELD_ID_SOURCE`] || null,
         fundedDate:   process.env[`${office.slot}_FIELD_ID_FUNDED_DATE`] || null,
       },
     });
@@ -130,6 +132,9 @@ export function loadConfig() {
       ])],
       fundedDate: [...FIELD_KEYS.fundedDate, ...splitNames(process.env.FIELD_FUNDED_DATE, [
         'Funded Date', 'funded_date', 'Date Funded',
+      ])],
+      source: [...FIELD_KEYS.source, ...splitNames(process.env.FIELD_SOURCE, [
+        'Source', 'source', 'Lead Source', 'lead_source',
       ])],
     },
   };

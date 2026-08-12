@@ -11,6 +11,8 @@ const state = {
   locations: [],
   configWarnings: [],
   dealsOpen: false,
+  sourcesOpen: false,
+  source: 'all',
 };
 
 // Broker headshots. Keys are matched against the first name of the GHL user,
@@ -69,10 +71,14 @@ function renderStats(totals, isAdmin) {
     { icon: '👥', label: 'Active Brokers', value: (totals.brokers || 0).toLocaleString(), color: 'var(--accent2)' },
   ];
 
+  // Fee isn't commission, so everyone sees it.
+  if (totals.fee !== undefined) {
+    cards.push({ icon: '💎', label: 'Total Fees', value: fmtMoney(totals.fee), color: 'var(--purple)' });
+  }
+
   if (isAdmin) {
     cards.push(
       { icon: '🏆', label: 'Commission', value: fmtMoney(totals.commission), color: 'var(--gold)' },
-      { icon: '💎', label: 'Fees', value: fmtMoney(totals.fee), color: 'var(--purple)' },
       { icon: '🚀', label: 'Comm + Fees', value: fmtMoney(totals.total), color: 'var(--accent2)' },
     );
   }
@@ -89,12 +95,13 @@ function renderStats(totals, isAdmin) {
 // ── LEADERBOARD ──────────────────────────────────────────────────────────
 function renderBoard(rows, isAdmin) {
   const showLoc = state.location === 'joint' && state.locations.length > 1;
+  const showFee = rows.some((r) => r.fee !== undefined);
 
   const head = ['<th class="center" style="width:50px">#</th>', '<th>Broker</th>',
                 '<th class="center">Deals</th>', '<th class="right">Funded Amount</th>'];
-  if (isAdmin) {
-    head.push('<th class="right">Commission</th>', '<th class="right">Fees</th>', '<th class="right">Total</th>');
-  }
+  if (isAdmin) head.push('<th class="right">Commission</th>');
+  if (showFee) head.push('<th class="right">Fees</th>');
+  if (isAdmin) head.push('<th class="right">Total</th>');
   $('board-head').innerHTML = head.join('');
 
   if (!rows.length) {
@@ -145,6 +152,7 @@ function renderBoard(rows, isAdmin) {
            <div class="bar-bg"><div class="bar-fill bar-green" style="width:${pct}%"></div></div>
          </div></td>`
       );
+      if (showFee) cells.push(`<td class="right"><span class="num fee">${fmtMoney(r.fee)}</span></td>`);
     }
 
     return `<tr style="animation-delay:${i * 0.04}s">${cells.join('')}</tr>`;
@@ -156,9 +164,14 @@ function renderBoard(rows, isAdmin) {
 
 // ── DEAL DETAIL ──────────────────────────────────────────────────────────
 function renderDeals(deals, isAdmin) {
-  const head = ['<th>Business</th>', '<th>Broker</th>', '<th>Lender</th>',
-                '<th class="right">Funded</th>'];
-  if (isAdmin) head.push('<th class="right">Commission</th>', '<th class="right">Fee</th>');
+  const showFee = deals.some((d) => d.fee !== undefined);
+  const showSource = deals.some((d) => d.source && d.source !== '—');
+
+  const head = ['<th>Business</th>', '<th>Broker</th>', '<th>Lender</th>'];
+  if (showSource) head.push('<th>Source</th>');
+  head.push('<th class="right">Funded</th>');
+  if (isAdmin) head.push('<th class="right">Commission</th>');
+  if (showFee) head.push('<th class="right">Fee</th>');
   head.push('<th class="right">Funded Date</th>');
   $('deals-head').innerHTML = head.join('');
 
@@ -171,18 +184,68 @@ function renderDeals(deals, isAdmin) {
       `<td><span class="emp-name">${esc(d.businessName)}</span></td>`,
       `<td>${esc(d.broker)}</td>`,
       `<td class="lender-cell">${esc(d.lender)}</td>`,
-      `<td class="right"><span class="num funded">${fmtMoney(d.fundedAmount)}</span></td>`,
     ];
+    if (showSource) cells.push(`<td class="lender-cell">${esc(d.source || '—')}</td>`);
+    cells.push(`<td class="right"><span class="num funded">${fmtMoney(d.fundedAmount)}</span></td>`);
     if (isAdmin) {
-      cells.push(
-        `<td class="right"><span class="num commission">${fmtMoney(d.commission)}</span></td>`,
-        `<td class="right"><span class="num fee">${fmtMoney(d.fee)}</span></td>`
-      );
+      cells.push(`<td class="right"><span class="num commission">${fmtMoney(d.commission)}</span></td>`);
+    }
+    if (showFee) {
+      cells.push(`<td class="right"><span class="num fee">${fmtMoney(d.fee)}</span></td>`);
     }
     cells.push(`<td class="right date-cell">${date}</td>`);
 
     return `<tr style="animation-delay:${Math.min(i * 0.02, 1)}s">${cells.join('')}</tr>`;
   }).join('');
+}
+
+// ── LEAD SOURCES ─────────────────────────────────────────────────────────
+function renderSources(sources, isAdmin) {
+  if (!sources || !sources.length) {
+    $('sources-body').innerHTML =
+      '<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:22px">No lead source data in this period.</td></tr>';
+    return;
+  }
+
+  const showFee = sources.some((s) => s.fee !== undefined);
+  const head = ['<th>Source</th>', '<th class="center">Deals</th>', '<th class="right">Funded</th>'];
+  if (isAdmin) head.push('<th class="right">Commission</th>');
+  if (showFee) head.push('<th class="right">Fees</th>');
+  if (isAdmin) head.push('<th class="right">Total</th>');
+  head.push('<th class="right">Share</th>');
+  $('sources-head').innerHTML = head.join('');
+
+  const grandFunded = sources.reduce((t, s) => t + s.fundedAmount, 0) || 1;
+
+  $('sources-body').innerHTML = sources.map((s, i) => {
+    const share = Math.round((s.fundedAmount / grandFunded) * 100);
+    const cells = [
+      `<td><span class="emp-name">${esc(s.source)}</span></td>`,
+      `<td class="center"><span class="deals-badge">${s.deals}</span></td>`,
+      `<td class="right"><span class="num funded">${fmtMoney(s.fundedAmount)}</span></td>`,
+    ];
+    if (isAdmin) cells.push(`<td class="right"><span class="num commission">${fmtMoney(s.commission)}</span></td>`);
+    if (showFee)  cells.push(`<td class="right"><span class="num fee">${fmtMoney(s.fee)}</span></td>`);
+    if (isAdmin) cells.push(`<td class="right"><span class="num total">${fmtMoney(s.total)}</span></td>`);
+    cells.push(`<td class="right">
+      <div class="total-cell">
+        <span class="date-cell">${share}%</span>
+        <div class="bar-bg"><div class="bar-fill bar-green" style="width:${share}%"></div></div>
+      </div></td>`);
+    return `<tr style="animation-delay:${i * 0.04}s">${cells.join('')}</tr>`;
+  }).join('');
+}
+
+function fillSourceSelect(sources) {
+  const sel = $('source-select');
+  const current = state.source;
+  const opts = ['<option value="all">All sources</option>']
+    .concat((sources || []).map((s) =>
+      `<option value="${esc(s.source)}">${esc(s.source)} (${s.deals})</option>`));
+  sel.innerHTML = opts.join('');
+  // Keep the active choice selected even though the list is rebuilt each load.
+  sel.value = current;
+  if (sel.value !== current) { sel.value = 'all'; state.source = 'all'; }
 }
 
 // ── MONTH DROPDOWNS ──────────────────────────────────────────────────────
@@ -207,6 +270,7 @@ async function load() {
   $('empty').hidden = true;
 
   const params = new URLSearchParams({ location: state.location });
+  if (state.source && state.source !== 'all') params.set('source', state.source);
   if (state.from && state.to) {
     params.set('from', state.from);
     params.set('to', state.to);
@@ -248,6 +312,8 @@ async function load() {
     }
 
     fillMonthSelects(data.months || []);
+    fillSourceSelect(data.sources);
+    renderSources(data.sources, isAdmin);
     renderStats(data.totals, isAdmin);
     renderBoard(data.leaderboard, isAdmin);
     renderDeals(data.deals, isAdmin);
@@ -322,6 +388,17 @@ $('apply-range').addEventListener('click', () => {
   $('month-select').value = '';
   $('preset-seg').querySelectorAll('.seg-btn').forEach((x) => x.classList.remove('active'));
   load();
+});
+
+$('source-select').addEventListener('change', (e) => {
+  state.source = e.target.value;
+  load();
+});
+
+$('sources-toggle').addEventListener('click', () => {
+  state.sourcesOpen = !state.sourcesOpen;
+  $('sources-wrap').hidden = !state.sourcesOpen;
+  $('sources-chev').classList.toggle('open', state.sourcesOpen);
 });
 
 $('deals-toggle').addEventListener('click', () => {

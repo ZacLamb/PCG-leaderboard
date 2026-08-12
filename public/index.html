@@ -54,6 +54,11 @@
     </div>
 
     <div class="control-group">
+      <span class="control-label">Lead Source</span>
+      <select class="select" id="source-select"><option value="all">All sources</option></select>
+    </div>
+
+    <div class="control-group">
       <span class="control-label">Range</span>
       <div class="range-row">
         <select class="select sm" id="from-select"><option value="">From</option></select>
@@ -84,6 +89,18 @@
     <table id="board-table" hidden>
       <thead><tr id="board-head"></tr></thead>
       <tbody id="board-body"></tbody>
+    </table>
+  </div>
+
+  <!-- LEAD SOURCES -->
+  <div class="section-title collapsible" id="sources-toggle">
+    <span>📣 Lead Sources</span>
+    <span class="chev" id="sources-chev">▸</span>
+  </div>
+  <div class="table-wrap" id="sources-wrap" hidden>
+    <table id="sources-table">
+      <thead><tr id="sources-head"></tr></thead>
+      <tbody id="sources-body"></tbody>
     </table>
   </div>
 

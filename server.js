@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 
 import { loadConfig, validateConfig } from './src/config.js';
 import { fetchOpportunities, fetchUsers, resolveFundedStage, fetchCustomFieldDefs, enrichWithCustomFields, setLogger, fetchPipelines } from './src/ghl.js';
-import { normalizeOpportunities, aggregateByBroker, buildTotals, fieldHealth } from './src/normalize.js';
+import { normalizeOpportunities, aggregateByBroker, buildTotals, fieldHealth, summarizeBySource } from './src/normalize.js';
 import { resolveRange, availableMonths } from './src/dateRange.js';
 import { cached, getStale, invalidate, cacheMeta } from './src/cache.js';
 import { attachRole, createSession, clearSession, verifyAdminPassword } from './src/auth.js';
@@ -307,15 +307,29 @@ app.get('/api/leaderboard', async (req, res) => {
       return d >= range.start && d <= range.end;
     });
 
-    const leaderboard = aggregateByBroker(inRange, { includeCommission: isAdmin });
-    const totals = buildTotals(inRange, { includeCommission: isAdmin });
+    /**
+     * Optional lead-source filter. Applied after the date filter so the source
+     * list below always reflects the full period — otherwise picking a source
+     * would erase every other option from the dropdown.
+     */
+    const sourceFilter = String(req.query.source || '').trim();
+    const filtered = sourceFilter && sourceFilter !== 'all'
+      ? inRange.filter((r) => (r.source && r.source !== '—' ? r.source : 'Unattributed') === sourceFilter)
+      : inRange;
+
+    // Fee is not commission, so it isn't gated. Total stays with commission —
+    // total minus fee would give commission away.
+    const leaderboard = aggregateByBroker(filtered, { includeCommission: isAdmin, includeFee: true });
+    const totals = buildTotals(filtered, { includeCommission: isAdmin, includeFee: true });
+    // Breakdown spans the unfiltered period so every source stays selectable.
+    const sources = summarizeBySource(inRange, { includeCommission: isAdmin, includeFee: true });
 
     /**
      * Warn only on genuine gaps. A deal reading its amount from the
      * opportunity value field is normal here, so that is not flagged —
      * a banner that fires on every deal teaches people to ignore banners.
      */
-    const health = fieldHealth(inRange);
+    const health = fieldHealth(filtered);
     if (health.total > 0) {
       if (health.fundedMissing === health.total) {
         warnings.push(
@@ -337,19 +351,20 @@ app.get('/api/leaderboard', async (req, res) => {
     }
 
     // Deal-level detail. Commission and fee are stripped for viewers.
-    const deals = inRange
+    const deals = filtered
       .map((r) => {
         const base = {
           broker: r.broker,
           businessName: r.businessName,
           fundedAmount: r.fundedAmount,
+          fee: r.fee,
           lender: r.lender,
+          source: r.source,
           fundedDate: r.fundedDate,
           locationName: r.locationName,
         };
         if (isAdmin) {
           base.commission = r.commission;
-          base.fee = r.fee;
           base.total = r.commission + r.fee;
         }
         return base;
@@ -362,6 +377,8 @@ app.get('/api/leaderboard', async (req, res) => {
       locations: locations.map((l) => ({ key: l.key, name: l.name })),
       totals,
       leaderboard,
+      sources,
+      appliedSource: sourceFilter || 'all',
       deals,
       months: availableMonths(rows),
       warnings: warnings.length ? warnings : undefined,

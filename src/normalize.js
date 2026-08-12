@@ -239,6 +239,14 @@ export function normalizeOpportunities(opportunities, users, opts) {
 
     const feePick = resolveField(opp, cfMap, fieldIds.fee, fieldNames.fee);
 
+    /**
+     * Lead source. GHL opportunities carry a native `source` property, and some
+     * accounts also keep one as a custom field — check the native value first,
+     * then fall back, so either setup resolves.
+     */
+    const sourcePick = resolveField(opp, cfMap, fieldIds.source, fieldNames.source);
+    const source = String(opp.source || sourcePick.value || '').trim() || '—';
+
     rows.push({
       id: opp.id,
       locationId,
@@ -250,6 +258,7 @@ export function normalizeOpportunities(opportunities, users, opts) {
       commission,
       fee: parseAmount(feePick.value),
       lender: String(resolveField(opp, cfMap, fieldIds.lender, fieldNames.lender).value || '—').trim(),
+      source,
       fundedDate: resolveFundedDate(opp, cfMap, fieldNames, fieldIds),
       status: opp.status || '',
       monetaryValue: parseAmount(opp.monetaryValue),
@@ -259,6 +268,7 @@ export function normalizeOpportunities(opportunities, users, opts) {
         fundedAmount: fundedPick.source,
         commission: commissionSource,
         fee: feePick.source,
+        leadSource: opp.source ? 'native opportunity.source' : sourcePick.source,
       },
       // Every custom field name this opportunity carries, resolved through the
       // definitions map — so diagnostics can show the real names.
@@ -279,7 +289,16 @@ export function normalizeOpportunities(opportunities, users, opts) {
  * commission/fee/total are omitted entirely when includeCommission is false —
  * they are never sent to a non-admin client, not merely hidden in the UI.
  */
-export function aggregateByBroker(rows, { includeCommission }) {
+/**
+ * Aggregate flat rows into per-broker leaderboard entries.
+ *
+ * Fee is visible to everyone; commission is admin-only. The combined total is
+ * gated with commission, not with fee — publishing total alongside fee would
+ * let anyone compute commission by subtraction, which would defeat the gate.
+ * Gated values are omitted from the object entirely rather than hidden in the
+ * UI, so there is nothing to recover from the network response.
+ */
+export function aggregateByBroker(rows, { includeCommission, includeFee = true }) {
   const map = new Map();
 
   for (const r of rows) {
@@ -315,6 +334,8 @@ export function aggregateByBroker(rows, { includeCommission }) {
       lenderCount: b.lenders.size,
     };
 
+    if (includeFee) base.fee = Math.round(b.fee);
+
     if (includeCommission) {
       base.commission = Math.round(b.commission);
       base.fee = Math.round(b.fee);
@@ -335,12 +356,16 @@ export function aggregateByBroker(rows, { includeCommission }) {
 }
 
 /** Roll rows up into the headline stat cards. */
-export function buildTotals(rows, { includeCommission }) {
+export function buildTotals(rows, { includeCommission, includeFee = true }) {
   const totals = {
     deals: rows.length,
     fundedAmount: Math.round(rows.reduce((s, r) => s + r.fundedAmount, 0)),
     brokers: new Set(rows.map((r) => r.broker)).size,
   };
+
+  if (includeFee) {
+    totals.fee = Math.round(rows.reduce((s, r) => s + r.fee, 0));
+  }
 
   if (includeCommission) {
     totals.commission = Math.round(rows.reduce((s, r) => s + r.commission, 0));
@@ -404,4 +429,40 @@ export function fieldHealth(rows) {
 export function stripInternals(row) {
   const { _sources, _availableFields, _rawCustomFields, ...clean } = row;
   return clean;
+}
+
+/**
+ * Funded volume and deal count grouped by lead source, biggest first.
+ * Commission and fee are only included when the caller is allowed to see them.
+ */
+export function summarizeBySource(rows, { includeCommission, includeFee = true }) {
+  const map = new Map();
+
+  for (const r of rows) {
+    const key = r.source && r.source !== '—' ? r.source : 'Unattributed';
+    if (!map.has(key)) {
+      map.set(key, { source: key, deals: 0, fundedAmount: 0, commission: 0, fee: 0 });
+    }
+    const s = map.get(key);
+    s.deals += 1;
+    s.fundedAmount += r.fundedAmount;
+    s.commission += r.commission;
+    s.fee += r.fee;
+  }
+
+  return [...map.values()]
+    .map((s) => {
+      const base = {
+        source: s.source,
+        deals: s.deals,
+        fundedAmount: Math.round(s.fundedAmount),
+      };
+      if (includeFee) base.fee = Math.round(s.fee);
+      if (includeCommission) {
+        base.commission = Math.round(s.commission);
+        base.total = Math.round(s.commission + s.fee);
+      }
+      return base;
+    })
+    .sort((a, b) => b.fundedAmount - a.fundedAmount || b.deals - a.deals);
 }
