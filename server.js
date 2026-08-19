@@ -79,9 +79,11 @@ async function syncLocation(loc) {
 
     if (useSheet) {
       try {
-        log(`Reading sheet ${loc.sheetId} (tab "${loc.sheetTab}")`);
+        log(`Reading sheet ${loc.sheetId}` +
+            (loc.sheetGid ? ` (gid ${loc.sheetGid})` : ` (tab "${loc.sheetTab}")`));
         const { rows: sheetRows, meta } = await fetchSheetRows({
           sheetId: loc.sheetId,
+          gid: loc.sheetGid,
           tab: loc.sheetTab,
           locationName: loc.name,
           report: logLine,
@@ -590,6 +592,33 @@ app.get('/api/selftest', selftestLimiter, async (req, res) => {
 
   for (const loc of cfg.locations) {
     const entry = { name: loc.name, locationId: loc.id, tokenPrefix: loc.token.slice(0, 8) + '…' };
+
+    // Sheet health first — it's the primary source, so its state matters most.
+    if (loc.sheetId) {
+      entry.sheet = { sheetId: loc.sheetId, gid: loc.sheetGid };
+      try {
+        const { rows: sr, meta } = await fetchSheetRows({
+          sheetId: loc.sheetId,
+          gid: loc.sheetGid,
+          tab: loc.sheetTab,
+          locationName: loc.name,
+        });
+        entry.sheet.ok = true;
+        entry.sheet.headers = meta.headers;
+        entry.sheet.totalRows = meta.totalSheetRows;
+        entry.sheet.usableRows = meta.usableRows;
+        entry.sheet.skipped = { noBroker: meta.skippedNoBroker, noDate: meta.skippedNoDate };
+        entry.sheet.columnsMatched = Object.keys(meta.columnsMatched);
+        entry.sheet.brokersSeen = [...new Set(sr.map((r) => r.broker))].sort();
+        entry.sheet.sampleRows = sr.slice(0, 3);
+      } catch (err) {
+        entry.sheet.ok = false;
+        entry.sheet.error = err.message;
+      }
+    } else {
+      entry.sheet = { configured: false };
+    }
+
     try {
       // Every pipeline/stage available, so a wrong-pipeline match is obvious.
       try {
@@ -649,6 +678,7 @@ app.get('/api/selftest', selftestLimiter, async (req, res) => {
   }
 
   out.config = {
+    dataSourceMode: cfg.dataSourceMode,
     fundedStageName: cfg.fundedStageName,
     countedStatuses: cfg.opportunityStatuses,
     commissionFromValueField: cfg.commissionFromValue,

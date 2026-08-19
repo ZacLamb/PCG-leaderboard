@@ -75,12 +75,20 @@ function mapColumns(cols) {
 /**
  * Fetch and parse one office's commission sheet.
  *
+ * Identifies the tab by gid when available. A gid is stable and unambiguous —
+ * it survives the tab being renamed, and it means we don't have to know how
+ * each office spelled "Commision". Falls back to the tab name if no gid.
+ *
  * @returns {{ rows: object[], meta: object }}
  */
-export async function fetchSheetRows({ sheetId, tab, locationName, report = () => {} }) {
+export async function fetchSheetRows({ sheetId, gid, tab, locationName, report = () => {} }) {
+  const target = gid
+    ? `&gid=${encodeURIComponent(gid)}`
+    : (tab ? `&sheet=${encodeURIComponent(tab)}` : '');
+
   const url =
     `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:json` +
-    (tab ? `&sheet=${encodeURIComponent(tab)}` : '') +
+    target +
     `&t=${Date.now()}`;
 
   const controller = new AbortController();

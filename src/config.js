@@ -42,8 +42,17 @@ function splitNames(value, fallback) {
  * else to get wrong in the dashboard.
  */
 const OFFICES = [
-  { slot: 'NY',    key: 'ny',    name: 'New York' },
-  { slot: 'MIAMI', key: 'miami', name: 'Miami' },
+  {
+    slot: 'NY', key: 'ny', name: 'New York',
+    // Commission sheet, identified by gid so a tab rename can't break it.
+    sheetId: '160-0nkSZ9641mTcGewLYIGTxU0rVP8OSEIqsuY_C6e0',
+    sheetGid: '644411698',
+  },
+  {
+    slot: 'MIAMI', key: 'miami', name: 'Miami',
+    sheetId: '1RIw6GEcvWaS77bw633YydoRuNsrqmyIuLrpElxpFzX8',
+    sheetGid: '177844678',
+  },
 ];
 
 export function loadConfig() {
@@ -63,11 +72,12 @@ export function loadConfig() {
       pipelineId: process.env[`${office.slot}_PIPELINE_ID`] || null,
       stageId: process.env[`${office.slot}_STAGE_ID`] || null,
       /**
-       * This office's commission sheet. When set, it's the source of truth and
-       * GHL becomes the fallback. Each office has its own spreadsheet.
+       * This office's commission sheet — the source of truth, with GHL as
+       * fallback. Baked in above; env vars are an override if a sheet moves.
        */
-      sheetId: process.env[`${office.slot}_SHEET_ID`] || null,
-      sheetTab: process.env[`${office.slot}_SHEET_TAB`] || 'Commision',
+      sheetId: process.env[`${office.slot}_SHEET_ID`] || office.sheetId || null,
+      sheetGid: process.env[`${office.slot}_SHEET_GID`] || office.sheetGid || null,
+      sheetTab: process.env[`${office.slot}_SHEET_TAB`] || null,
       /**
        * Optional exact custom field IDs, e.g. NY_FIELD_ID_FUNDED_AMOUNT.
        * These are per-office because field IDs differ between sub-accounts
