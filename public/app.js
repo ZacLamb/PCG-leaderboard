@@ -298,6 +298,11 @@ async function load() {
     $('header-sub').textContent =
       data.locations.map((l) => l.name).join(' + ') + ' — ' + data.range.label;
 
+    // Say which system the numbers came from — sheet and CRM can disagree.
+    const srcLabels = (data.locations || []).map((l) =>
+      `${l.name}: ${l.dataSource === 'sheet' ? 'Sheet' : 'CRM'}`);
+    $('source-note').textContent = srcLabels.length ? srcLabels.join('  ·  ') : '';
+
     if (data.cache?.cachedAt) {
       const mins = Math.round((Date.now() - data.cache.cachedAt) / 60000);
       $('cache-note').textContent = mins < 1 ? 'Updated just now' : `Updated ${mins}m ago`;

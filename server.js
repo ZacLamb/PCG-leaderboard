@@ -11,6 +11,7 @@ import { normalizeOpportunities, aggregateByBroker, buildTotals, fieldHealth, su
 import { resolveRange, availableMonths } from './src/dateRange.js';
 import { cached, getStale, invalidate, cacheMeta } from './src/cache.js';
 import { attachRole, createSession, clearSession, verifyAdminPassword } from './src/auth.js';
+import { fetchSheetRows, upgradeBrokerNames } from './src/sheets.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const cfg = loadConfig();
@@ -58,7 +59,14 @@ app.use(attachRole(cfg.jwtSecret || 'unset-secret-config-invalid'));
 
 // ── Data pipeline ────────────────────────────────────────────────────────────
 
-/** Fetch + normalize one location's funded opportunities. Cached. */
+/**
+ * Load one office's funded deals.
+ *
+ * The sheet is the source of truth when configured. GHL is the fallback, used
+ * when there's no sheet, the sheet can't be read, or it holds no usable rows.
+ * A sheet that loads but is genuinely empty still falls through to GHL rather
+ * than showing an empty board.
+ */
 async function syncLocation(loc) {
   const key = `loc:${loc.id}`;
 
@@ -67,6 +75,71 @@ async function syncLocation(loc) {
     log('─'.repeat(50));
     log(`Sync starting — location ${loc.id}`);
 
+    const useSheet = loc.sheetId && cfg.dataSourceMode !== 'ghl';
+
+    if (useSheet) {
+      try {
+        log(`Reading sheet ${loc.sheetId} (tab "${loc.sheetTab}")`);
+        const { rows: sheetRows, meta } = await fetchSheetRows({
+          sheetId: loc.sheetId,
+          tab: loc.sheetTab,
+          locationName: loc.name,
+          report: logLine,
+        });
+
+        log(`Sheet: ${meta.usableRows} usable rows of ${meta.totalSheetRows}` +
+            (meta.skippedNoDate ? `, ${meta.skippedNoDate} skipped (no date)` : '') +
+            (meta.skippedNoBroker ? `, ${meta.skippedNoBroker} skipped (no broker)` : ''));
+
+        if (sheetRows.length === 0) {
+          log('⚠️  Sheet had no usable rows — falling back to GHL.');
+        } else {
+          // One cheap GHL call to turn "Ari" into "Ari Goldman" for consistent
+          // naming and headshots across both data sources.
+          let users = {};
+          try {
+            users = await fetchUsers({ token: loc.token, locationId: loc.id });
+          } catch (e) {
+            log(`Could not load GHL users for name matching: ${e.message}`);
+          }
+
+          const named = upgradeBrokerNames(sheetRows, users, (m) => log(m));
+          const rows = named.map((r) => ({
+            ...r,
+            locationId: loc.id,
+            locationName: loc.name,
+            brokerId: null,
+            monetaryValue: r.commission,
+            _sources: { fundedAmount: 'sheet', commission: 'sheet', fee: 'sheet' },
+            _availableFields: [],
+            _rawCustomFields: [],
+          }));
+
+          const totalFunded = rows.reduce((t, r) => t + r.fundedAmount, 0);
+          log(`Sheet is the active source — ${rows.length} deals, $${totalFunded.toLocaleString()} funded`);
+          if (rows[0]) {
+            const s = rows[0];
+            log(`Sample: ${s.broker} | ${s.businessName} | funded $${s.fundedAmount} | comm $${s.commission} | ${s.lender}`);
+          }
+          return rows;
+        }
+      } catch (err) {
+        log(`⚠️  Sheet read failed: ${err.message}`);
+        if (cfg.dataSourceMode === 'sheet') throw err; // strict mode: don't mask it
+        log('    Falling back to GHL.');
+      }
+    } else if (!loc.sheetId && cfg.dataSourceMode !== 'ghl') {
+      log(`No sheet configured — set ${loc.slot}_SHEET_ID to make the sheet primary.`);
+    }
+
+    return syncFromGHL(loc, log);
+  });
+
+  return value;
+}
+
+/** The CRM path — used when no sheet is configured or the sheet is unavailable. */
+async function syncFromGHL(loc, log) {
     // Resolve the Funded stage unless it's pinned in env.
     let pipelineId = loc.pipelineId;
     let stageId = loc.stageId;
@@ -195,11 +268,8 @@ async function syncLocation(loc) {
       log(`    Field names seen on deals: ${health.availableFields.slice(0, 15).join(', ') || '(none)'}`);
     }
 
-    log(`Sync complete — ${rows.length} rows`);
-    return rows;
-  });
-
-  return value;
+  log(`Sync complete — ${rows.length} rows (source: GHL)`);
+  return rows;
 }
 
 /** Resolve the ?location= param into the set of locations to include. */
@@ -374,7 +444,10 @@ app.get('/api/leaderboard', async (req, res) => {
     res.json({
       role: req.role,
       range: { label: range.label, preset: range.preset, start: range.start, end: range.end },
-      locations: locations.map((l) => ({ key: l.key, name: l.name })),
+      locations: locations.map((l) => {
+        const fromSheet = rows.some((r) => r.locationName === l.name && r.dataSource === 'sheet');
+        return { key: l.key, name: l.name, dataSource: fromSheet ? 'sheet' : 'ghl' };
+      }),
       totals,
       leaderboard,
       sources,

@@ -63,6 +63,12 @@ export function loadConfig() {
       pipelineId: process.env[`${office.slot}_PIPELINE_ID`] || null,
       stageId: process.env[`${office.slot}_STAGE_ID`] || null,
       /**
+       * This office's commission sheet. When set, it's the source of truth and
+       * GHL becomes the fallback. Each office has its own spreadsheet.
+       */
+      sheetId: process.env[`${office.slot}_SHEET_ID`] || null,
+      sheetTab: process.env[`${office.slot}_SHEET_TAB`] || 'Commision',
+      /**
        * Optional exact custom field IDs, e.g. NY_FIELD_ID_FUNDED_AMOUNT.
        * These are per-office because field IDs differ between sub-accounts
        * even when the field names match. Highest priority of all — use when
@@ -105,6 +111,14 @@ export function loadConfig() {
      */
     opportunityStatuses: String(process.env.OPPORTUNITY_STATUS || 'won,open')
       .split(',').map((s) => s.trim().toLowerCase()).filter(Boolean),
+
+    /**
+     * How the sheet and GHL relate:
+     *   'primary'  sheet wins; GHL is used only if the sheet fails or is empty
+     *   'sheet'    sheet only; an error surfaces rather than silently swapping
+     *   'ghl'      ignore sheets entirely
+     */
+    dataSourceMode: String(process.env.DATA_SOURCE || 'primary').toLowerCase(),
 
     /**
      * Candidates for each value, tried in order. Field keys come first because
