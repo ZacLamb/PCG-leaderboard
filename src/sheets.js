@@ -24,6 +24,11 @@ const COLUMNS = {
   lender:      ['lender/s', 'lenders', 'lender', 'funder'],
   gotPaid:     ['did we get paid', 'got paid', 'paid'],
   source:      ['source', 'lead source'],
+  // Consolidation deals record their amounts in dedicated columns and leave
+  // Funded Amount / Commision Amount blank.
+  consolidationFunded:     ['total consolidation funded', 'consolidation funded'],
+  consolidationCommission: ['total consolidation commision', 'total consolidation commission',
+                            'consolidation commision', 'consolidation commission'],
 };
 
 const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -33,6 +38,32 @@ function parseAmount(v) {
   if (typeof v === 'number') return Number.isFinite(v) ? v : 0;
   const n = parseFloat(String(v).replace(/[^0-9.\-]/g, ''));
   return Number.isFinite(n) ? n : 0;
+}
+
+/**
+ * Turn Google's response into a sentence that names the actual problem.
+ * A sign-in page, a permission error and a missing tab all fail the same way
+ * without this, and each needs a different fix.
+ */
+function describeSheetBody(text) {
+  const body = String(text || '');
+  const head = body.slice(0, 400).replace(/\s+/g, ' ');
+
+  if (/accounts\.google\.com|ServiceLogin|signin\/v2|Sign in/i.test(body)) {
+    return 'Google served a sign-in page — the sheet is not readable without logging in. ' +
+           'Set File → Share → General access → Anyone with the link → Viewer.';
+  }
+  if (/permission|not have access|PERMISSION_DENIED|requires access/i.test(body)) {
+    return 'Google reported a permissions error. ' +
+           'Set File → Share → General access → Anyone with the link → Viewer.';
+  }
+  if (/invalid[_ ]?(sheet|gid)|Invalid query|unknown sheet/i.test(body)) {
+    return 'Google rejected the tab reference — the gid may be wrong for this spreadsheet.';
+  }
+  if (/<!DOCTYPE html|<html/i.test(body)) {
+    return `Google returned an HTML page instead of data. First 200 chars: ${head.slice(0, 200)}`;
+  }
+  return `Unexpected response. First 200 chars: ${head.slice(0, 200)}`;
 }
 
 /** gviz returns dates as the literal string "Date(2026,6,10)" — month is 0-based. */
@@ -95,23 +126,42 @@ export async function fetchSheetRows({ sheetId, gid, tab, locationName, report =
   const timeout = setTimeout(() => controller.abort(), 20_000);
 
   let text;
+  let httpStatus;
   try {
-    const res = await fetch(url, { signal: controller.signal });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const res = await fetch(url, { signal: controller.signal, redirect: 'follow' });
+    httpStatus = res.status;
     text = await res.text();
+    if (!res.ok) {
+      throw new Error(`Google returned HTTP ${res.status}. ${describeSheetBody(text)}`);
+    }
   } finally {
     clearTimeout(timeout);
   }
 
   const match = text.match(/google\.visualization\.Query\.setResponse\(([\s\S]*)\)/);
   if (!match) {
+    // Say what actually came back — an auth wall and a bad gid look identical
+    // otherwise, and they need completely different fixes.
     throw new Error(
-      'Sheet did not return data. Share it so anyone with the link can view ' +
-      '(File → Share → General access → Anyone with the link → Viewer).'
+      `Sheet did not return data (HTTP ${httpStatus}). ${describeSheetBody(text)}`
     );
   }
 
   const json = JSON.parse(match[1]);
+
+  // gviz can answer with a well-formed error object instead of a table —
+  // a wrong gid does exactly this. Report it rather than crashing on .cols.
+  if (json.status === 'error' || !json.table) {
+    const reasons = (json.errors || [])
+      .map((e) => e.detailed_message || e.message || e.reason)
+      .filter(Boolean)
+      .join('; ');
+    throw new Error(
+      `Google rejected the query${reasons ? `: ${reasons}` : '.'} ` +
+      'Check that the gid matches a tab in this spreadsheet.'
+    );
+  }
+
   const cols = json.table.cols || [];
   const rawRows = json.table.rows || [];
   const map = mapColumns(cols);
@@ -144,11 +194,29 @@ export async function fetchSheetRows({ sheetId, gid, tab, locationName, report =
     const date = parseSheetDate(cell(r, map.date));
     if (!date) { skippedNoDate++; continue; }
 
+    /**
+     * A consolidation deal leaves Funded Amount and Commision Amount blank and
+     * records its numbers in the consolidation columns instead. Treated as a
+     * fallback rather than a sum: for these rows the consolidation figure IS
+     * the funded amount, so adding both would double-count.
+     */
+    const plainFunded = parseAmount(cell(r, map.funded));
+    const plainComm   = parseAmount(cell(r, map.commission));
+    const consFunded  = parseAmount(cell(r, map.consolidationFunded));
+    const consComm    = parseAmount(cell(r, map.consolidationCommission));
+
+    const isConsolidation = !plainFunded && !!consFunded;
+    const fundedAmount = plainFunded || consFunded;
+    const commission   = plainComm || consComm;
+
     rows.push({
       broker,
       businessName: String(cell(r, map.business) || '—').trim(),
-      fundedAmount: parseAmount(cell(r, map.funded)),
-      commission: parseAmount(cell(r, map.commission)),
+      fundedAmount,
+      commission,
+      isConsolidation,
+      consolidationFunded: consFunded,
+      consolidationCommission: consComm,
       fee: parseAmount(cell(r, map.fee)),
       payout: parseAmount(cell(r, map.payout)),
       clawback: parseAmount(cell(r, map.clawback)),

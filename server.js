@@ -432,6 +432,7 @@ app.get('/api/leaderboard', async (req, res) => {
           fee: r.fee,
           lender: r.lender,
           source: r.source,
+          isConsolidation: !!r.isConsolidation,
           fundedDate: r.fundedDate,
           locationName: r.locationName,
         };

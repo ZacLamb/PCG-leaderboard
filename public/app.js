@@ -181,7 +181,8 @@ function renderDeals(deals, isAdmin) {
       : '—';
 
     const cells = [
-      `<td><span class="emp-name">${esc(d.businessName)}</span></td>`,
+      `<td><span class="emp-name">${esc(d.businessName)}</span>${
+        d.isConsolidation ? '<span class="loc-chip">consolidation</span>' : ''}</td>`,
       `<td>${esc(d.broker)}</td>`,
       `<td class="lender-cell">${esc(d.lender)}</td>`,
     ];
