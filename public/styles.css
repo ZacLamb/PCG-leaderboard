@@ -287,3 +287,25 @@ td { padding: 12px 14px; font-size: 15px; vertical-align: middle; }
   .controls { gap: 12px; }
   th, td { padding: 10px 8px; font-size: 13px; }
 }
+
+/* ── Deal detail filters ──────────────────────────────────────────────── */
+.deal-filters {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 12px 14px;
+  background: var(--surface2);
+  border-bottom: 1px solid var(--border);
+}
+.deal-search {
+  flex: 1 1 260px; min-width: 200px; max-width: 420px;
+  padding: 8px 12px; font-size: 14px;
+}
+.deal-filters .select.sm { min-width: 140px; }
+
+/* Sortable column headers */
+th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+th.sortable:hover { color: var(--accent); }
+th.sortable .arrow { opacity: 0.35; margin-left: 4px; font-size: 9px; }
+th.sortable.active { color: var(--accent); }
+th.sortable.active .arrow { opacity: 1; }
+
+.no-match { padding: 34px; text-align: center; color: var(--muted); font-size: 14px; }

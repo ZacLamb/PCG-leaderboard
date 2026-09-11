@@ -111,6 +111,19 @@
     <span class="chev" id="deals-chev">▸</span>
   </div>
   <div class="table-wrap" id="deals-wrap" hidden>
+    <div class="deal-filters">
+      <input type="search" class="input deal-search" id="deal-search"
+             placeholder="Search business, broker, lender…" autocomplete="off">
+      <select class="select sm" id="deal-broker">
+        <option value="all">All brokers</option>
+      </select>
+      <select class="select sm" id="deal-lender">
+        <option value="all">All lenders</option>
+      </select>
+      <button class="ghost-btn" id="deal-clear">Clear</button>
+      <span class="spacer"></span>
+      <span class="cache-note" id="deal-count"></span>
+    </div>
     <table id="deals-table">
       <thead><tr id="deals-head"></tr></thead>
       <tbody id="deals-body"></tbody>

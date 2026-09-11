@@ -13,6 +13,14 @@ const state = {
   dealsOpen: false,
   sourcesOpen: false,
   source: 'all',
+  // Deal Detail is filtered and sorted in the browser — the rows are already
+  // in the payload, so there's no reason to round-trip the server for it.
+  deals: [],
+  dealsAdmin: false,
+  dealSearch: '',
+  dealBroker: 'all',
+  dealLender: 'all',
+  dealSort: { key: 'fundedDate', dir: 'desc' },
 };
 
 // Broker headshots. Keys are matched against the first name of the GHL user,
@@ -164,18 +172,92 @@ function renderBoard(rows, isAdmin) {
 
 // ── DEAL DETAIL ──────────────────────────────────────────────────────────
 function renderDeals(deals, isAdmin) {
-  const showFee = deals.some((d) => d.fee !== undefined);
-  const showSource = deals.some((d) => d.source && d.source !== '—');
+  // Keep the full set so filtering can re-run without refetching.
+  state.deals = deals || [];
+  state.dealsAdmin = isAdmin;
+  fillDealFilters(state.deals);
+  applyDealFilters();
+}
 
-  const head = ['<th>Business</th>', '<th>Broker</th>', '<th>Lender</th>'];
-  if (showSource) head.push('<th>Source</th>');
-  head.push('<th class="right">Funded</th>');
-  if (isAdmin) head.push('<th class="right">Commission</th>');
-  if (showFee) head.push('<th class="right">Fee</th>');
-  head.push('<th class="right">Funded Date</th>');
-  $('deals-head').innerHTML = head.join('');
+/** Populate the broker and lender dropdowns from the current deal set. */
+function fillDealFilters(deals) {
+  const brokers = [...new Set(deals.map((d) => d.broker).filter(Boolean))].sort();
+  const lenders = [...new Set(deals.map((d) => d.lender).filter((l) => l && l !== '—'))].sort();
 
-  $('deals-body').innerHTML = deals.slice(0, 250).map((d, i) => {
+  const fill = (id, values, label, current) => {
+    const sel = $(id);
+    sel.innerHTML = `<option value="all">${label}</option>` +
+      values.map((v) => `<option value="${esc(v)}">${esc(v)}</option>`).join('');
+    // Preserve the active choice across reloads; drop it if it's gone.
+    sel.value = values.includes(current) ? current : 'all';
+    return sel.value;
+  };
+
+  state.dealBroker = fill('deal-broker', brokers, 'All brokers', state.dealBroker);
+  state.dealLender = fill('deal-lender', lenders, 'All lenders', state.dealLender);
+}
+
+/** Filter + sort the retained deals and paint the table. */
+function applyDealFilters() {
+  const isAdmin = state.dealsAdmin;
+  const q = state.dealSearch.trim().toLowerCase();
+
+  let rows = state.deals.filter((d) => {
+    if (state.dealBroker !== 'all' && d.broker !== state.dealBroker) return false;
+    if (state.dealLender !== 'all' && d.lender !== state.dealLender) return false;
+    if (!q) return true;
+    // One box searches every text field — faster than picking a column first.
+    return [d.businessName, d.broker, d.lender, d.source]
+      .some((v) => String(v || '').toLowerCase().includes(q));
+  });
+
+  const { key, dir } = state.dealSort;
+  const mul = dir === 'asc' ? 1 : -1;
+  rows = rows.slice().sort((a, b) => {
+    let av = a[key], bv = b[key];
+    if (key === 'fundedDate') {
+      av = av ? new Date(av).getTime() : 0;
+      bv = bv ? new Date(bv).getTime() : 0;
+    }
+    if (typeof av === 'number' || typeof bv === 'number') {
+      return ((av || 0) - (bv || 0)) * mul;
+    }
+    return String(av || '').localeCompare(String(bv || '')) * mul;
+  });
+
+  const showFee = state.deals.some((d) => d.fee !== undefined);
+  const showSource = state.deals.some((d) => d.source && d.source !== '—');
+
+  const cols = [
+    { key: 'businessName', label: 'Business' },
+    { key: 'broker',       label: 'Broker' },
+    { key: 'lender',       label: 'Lender' },
+  ];
+  if (showSource) cols.push({ key: 'source', label: 'Source' });
+  cols.push({ key: 'fundedAmount', label: 'Funded', right: true });
+  if (isAdmin) cols.push({ key: 'commission', label: 'Commission', right: true });
+  if (showFee) cols.push({ key: 'fee', label: 'Fee', right: true });
+  cols.push({ key: 'fundedDate', label: 'Funded Date', right: true });
+
+  $('deals-head').innerHTML = cols.map((c) => {
+    const active = c.key === key;
+    const arrow = active ? (dir === 'asc' ? '▲' : '▼') : '▲';
+    return `<th class="sortable${active ? ' active' : ''}${c.right ? ' right' : ''}" data-sort="${c.key}">` +
+           `${c.label}<span class="arrow">${arrow}</span></th>`;
+  }).join('');
+
+  const total = state.deals.length;
+  $('deal-count').textContent = rows.length === total
+    ? `${total} deal${total === 1 ? '' : 's'}`
+    : `${rows.length} of ${total} deals`;
+
+  if (!rows.length) {
+    $('deals-body').innerHTML =
+      `<tr><td colspan="${cols.length}" class="no-match">No deals match these filters.</td></tr>`;
+    return;
+  }
+
+  $('deals-body').innerHTML = rows.slice(0, 250).map((d, i) => {
     const date = d.fundedDate
       ? new Date(d.fundedDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
       : '—';
@@ -188,16 +270,27 @@ function renderDeals(deals, isAdmin) {
     ];
     if (showSource) cells.push(`<td class="lender-cell">${esc(d.source || '—')}</td>`);
     cells.push(`<td class="right"><span class="num funded">${fmtMoney(d.fundedAmount)}</span></td>`);
-    if (isAdmin) {
-      cells.push(`<td class="right"><span class="num commission">${fmtMoney(d.commission)}</span></td>`);
-    }
-    if (showFee) {
-      cells.push(`<td class="right"><span class="num fee">${fmtMoney(d.fee)}</span></td>`);
-    }
+    if (isAdmin) cells.push(`<td class="right"><span class="num commission">${fmtMoney(d.commission)}</span></td>`);
+    if (showFee) cells.push(`<td class="right"><span class="num fee">${fmtMoney(d.fee)}</span></td>`);
     cells.push(`<td class="right date-cell">${date}</td>`);
 
     return `<tr style="animation-delay:${Math.min(i * 0.02, 1)}s">${cells.join('')}</tr>`;
   }).join('');
+
+  // Headers are rebuilt each pass, so rebind after painting.
+  $('deals-head').querySelectorAll('th.sortable').forEach((th) => {
+    th.addEventListener('click', () => {
+      const k = th.dataset.sort;
+      if (state.dealSort.key === k) {
+        state.dealSort.dir = state.dealSort.dir === 'asc' ? 'desc' : 'asc';
+      } else {
+        // Money and dates are most useful largest-first on the first click.
+        const numericFirst = ['fundedAmount', 'commission', 'fee', 'fundedDate'];
+        state.dealSort = { key: k, dir: numericFirst.includes(k) ? 'desc' : 'asc' };
+      }
+      applyDealFilters();
+    });
+  });
 }
 
 // ── LEAD SOURCES ─────────────────────────────────────────────────────────
@@ -405,6 +498,38 @@ $('sources-toggle').addEventListener('click', () => {
   state.sourcesOpen = !state.sourcesOpen;
   $('sources-wrap').hidden = !state.sourcesOpen;
   $('sources-chev').classList.toggle('open', state.sourcesOpen);
+});
+
+// ── Deal Detail filter events ────────────────────────────────────────────
+let dealSearchTimer;
+$('deal-search').addEventListener('input', (e) => {
+  // Debounced so typing doesn't repaint hundreds of rows on every keystroke.
+  clearTimeout(dealSearchTimer);
+  const v = e.target.value;
+  dealSearchTimer = setTimeout(() => {
+    state.dealSearch = v;
+    applyDealFilters();
+  }, 150);
+});
+
+$('deal-broker').addEventListener('change', (e) => {
+  state.dealBroker = e.target.value;
+  applyDealFilters();
+});
+
+$('deal-lender').addEventListener('change', (e) => {
+  state.dealLender = e.target.value;
+  applyDealFilters();
+});
+
+$('deal-clear').addEventListener('click', () => {
+  state.dealSearch = '';
+  state.dealBroker = 'all';
+  state.dealLender = 'all';
+  $('deal-search').value = '';
+  $('deal-broker').value = 'all';
+  $('deal-lender').value = 'all';
+  applyDealFilters();
 });
 
 $('deals-toggle').addEventListener('click', () => {
