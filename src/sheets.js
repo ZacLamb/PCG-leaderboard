@@ -75,7 +75,16 @@ function parseSheetDate(v) {
       return new Date(Date.UTC(p[0], p[1], p[2], 12)); // midday UTC avoids TZ edge flips
     }
     const d = new Date(v);
-    return isNaN(d.getTime()) ? null : d;
+    if (isNaN(d.getTime())) return null;
+
+    /**
+     * Free-text notes land in date columns ("Ari paid $600" parses as year 600).
+     * Anything outside a sane window is a misread, not a date.
+     */
+    const year = d.getUTCFullYear();
+    if (year < 2000 || year > 2100) return null;
+
+    return d;
   } catch {
     return null;
   }
@@ -254,6 +263,18 @@ export async function fetchSheetRows({ sheetId, gid, tab, locationName, report =
  * Only unambiguous matches are upgraded — if two GHL users share a first name,
  * the sheet's version is kept rather than guessing which person it means.
  */
+/**
+ * Normalize a name's casing for display: "JAMES" -> "James", "jack/sean" ->
+ * "Jack/Sean". Applied to names we can't upgrade to a full GHL name, because
+ * the leaderboard groups by the broker string — without this, "Ari" and "ari"
+ * are two people and one rep's deals get split across two rows.
+ */
+function titleCase(name) {
+  return String(name)
+    .toLowerCase()
+    .replace(/\b[a-z]/g, (c) => c.toUpperCase());
+}
+
 export function upgradeBrokerNames(rows, users, report = () => {}) {
   const byFirst = new Map();
 
@@ -265,20 +286,27 @@ export function upgradeBrokerNames(rows, users, report = () => {}) {
   }
 
   let upgraded = 0;
+  let recased = 0;
   const ambiguous = new Set();
 
   const out = rows.map((r) => {
     const key = norm(r.broker);
+
     // Already a full name that matches a GHL user? Leave it.
     if (String(r.broker).includes(' ')) return r;
 
     const full = byFirst.get(key);
     if (full) { upgraded++; return { ...r, broker: full }; }
     if (byFirst.has(key)) ambiguous.add(r.broker);
-    return r;
+
+    // Couldn't upgrade — at least make the casing consistent so variants merge.
+    const cased = titleCase(r.broker);
+    if (cased !== r.broker) recased++;
+    return { ...r, broker: cased };
   });
 
   if (upgraded) report(`Matched ${upgraded} sheet entries to full GHL names`);
+  if (recased) report(`Normalized casing on ${recased} unmatched name(s) so variants merge`);
   if (ambiguous.size) {
     report(`Kept short names for ambiguous first names: ${[...ambiguous].join(', ')}`);
   }
