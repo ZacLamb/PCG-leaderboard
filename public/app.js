@@ -18,8 +18,10 @@ const state = {
   deals: [],
   dealsAdmin: false,
   dealSearch: '',
-  dealBroker: 'all',
-  dealLender: 'all',
+  // Empty array means "no filter" rather than "nothing selected" — simpler
+  // than carrying a separate all/none flag.
+  dealBrokers: [],
+  dealLenders: [],
   dealSort: { key: 'fundedDate', dir: 'desc' },
 };
 
@@ -179,22 +181,97 @@ function renderDeals(deals, isAdmin) {
   applyDealFilters();
 }
 
-/** Populate the broker and lender dropdowns from the current deal set. */
+/**
+ * Build the broker and lender multi-selects from the current deal set.
+ *
+ * Each option carries its deal count, and any previously-checked value that no
+ * longer exists in this period is dropped so a stale filter can't silently
+ * hide everything.
+ */
 function fillDealFilters(deals) {
-  const brokers = [...new Set(deals.map((d) => d.broker).filter(Boolean))].sort();
-  const lenders = [...new Set(deals.map((d) => d.lender).filter((l) => l && l !== '—'))].sort();
-
-  const fill = (id, values, label, current) => {
-    const sel = $(id);
-    sel.innerHTML = `<option value="all">${label}</option>` +
-      values.map((v) => `<option value="${esc(v)}">${esc(v)}</option>`).join('');
-    // Preserve the active choice across reloads; drop it if it's gone.
-    sel.value = values.includes(current) ? current : 'all';
-    return sel.value;
+  const tally = (key, skipDash) => {
+    const counts = new Map();
+    for (const d of deals) {
+      const v = d[key];
+      if (!v || (skipDash && v === '—')) continue;
+      counts.set(v, (counts.get(v) || 0) + 1);
+    }
+    return [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0]));
   };
 
-  state.dealBroker = fill('deal-broker', brokers, 'All brokers', state.dealBroker);
-  state.dealLender = fill('deal-lender', lenders, 'All lenders', state.dealLender);
+  const brokers = tally('broker', false);
+  const lenders = tally('lender', true);
+
+  state.dealBrokers = state.dealBrokers.filter((v) => brokers.some((b) => b[0] === v));
+  state.dealLenders = state.dealLenders.filter((v) => lenders.some((l) => l[0] === v));
+
+  buildMultiselect('broker', brokers, state.dealBrokers, 'brokers');
+  buildMultiselect('lender', lenders, state.dealLenders, 'lenders');
+}
+
+/** Render one multi-select's panel and wire its checkboxes. */
+function buildMultiselect(kind, entries, selected, noun) {
+  const panel = $(`ms-${kind}-panel`);
+
+  panel.innerHTML =
+    `<div class="ms-actions">
+       <button type="button" data-act="all">Select all</button>
+       <button type="button" data-act="none">Clear</button>
+     </div>` +
+    entries.map(([value, count]) => `
+      <label class="ms-option">
+        <input type="checkbox" value="${esc(value)}" ${selected.includes(value) ? 'checked' : ''}>
+        <span>${esc(value)}</span>
+        <span class="ms-count">${count}</span>
+      </label>`).join('');
+
+  panel.querySelectorAll('input[type=checkbox]').forEach((cb) => {
+    cb.addEventListener('change', () => {
+      const list = kind === 'broker' ? state.dealBrokers : state.dealLenders;
+      const i = list.indexOf(cb.value);
+      if (cb.checked && i === -1) list.push(cb.value);
+      if (!cb.checked && i !== -1) list.splice(i, 1);
+      updateMultiselectLabel(kind, noun);
+      applyDealFilters();
+    });
+  });
+
+  panel.querySelectorAll('.ms-actions button').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const list = kind === 'broker' ? state.dealBrokers : state.dealLenders;
+      list.length = 0;
+      // "Select all" and "Clear" both mean no filter, so leave the list empty
+      // and just reflect it in the checkboxes.
+      if (btn.dataset.act === 'all') {
+        panel.querySelectorAll('input[type=checkbox]').forEach((cb) => { cb.checked = true; });
+        entries.forEach(([v]) => list.push(v));
+      } else {
+        panel.querySelectorAll('input[type=checkbox]').forEach((cb) => { cb.checked = false; });
+      }
+      updateMultiselectLabel(kind, noun);
+      applyDealFilters();
+    });
+  });
+
+  updateMultiselectLabel(kind, noun);
+}
+
+/** Button text: "All lenders", a single name, or "3 lenders". */
+function updateMultiselectLabel(kind, noun) {
+  const list = kind === 'broker' ? state.dealBrokers : state.dealLenders;
+  const btn = $(`ms-${kind}-btn`);
+  const total = $(`ms-${kind}-panel`).querySelectorAll('input[type=checkbox]').length;
+
+  if (list.length === 0 || list.length === total) {
+    btn.textContent = `All ${noun}`;
+    btn.classList.remove('has-selection');
+  } else if (list.length === 1) {
+    btn.textContent = list[0].length > 20 ? list[0].slice(0, 19) + '…' : list[0];
+    btn.classList.add('has-selection');
+  } else {
+    btn.textContent = `${list.length} ${noun}`;
+    btn.classList.add('has-selection');
+  }
 }
 
 /** Filter + sort the retained deals and paint the table. */
@@ -202,9 +279,15 @@ function applyDealFilters() {
   const isAdmin = state.dealsAdmin;
   const q = state.dealSearch.trim().toLowerCase();
 
+  const brokerOptionCount = $('ms-broker-panel').querySelectorAll('input').length;
+  const lenderOptionCount = $('ms-lender-panel').querySelectorAll('input').length;
+
   let rows = state.deals.filter((d) => {
-    if (state.dealBroker !== 'all' && d.broker !== state.dealBroker) return false;
-    if (state.dealLender !== 'all' && d.lender !== state.dealLender) return false;
+    // An empty list (or everything checked) means no filter on that field.
+    if (state.dealBrokers.length && state.dealBrokers.length !== brokerOptionCount
+        && !state.dealBrokers.includes(d.broker)) return false;
+    if (state.dealLenders.length && state.dealLenders.length !== lenderOptionCount
+        && !state.dealLenders.includes(d.lender)) return false;
     if (!q) return true;
     // One box searches every text field — faster than picking a column first.
     return [d.businessName, d.broker, d.lender, d.source]
@@ -512,23 +595,43 @@ $('deal-search').addEventListener('input', (e) => {
   }, 150);
 });
 
-$('deal-broker').addEventListener('change', (e) => {
-  state.dealBroker = e.target.value;
-  applyDealFilters();
+// Open/close the multi-select panels.
+['broker', 'lender'].forEach((kind) => {
+  $(`ms-${kind}-btn`).addEventListener('click', (e) => {
+    e.stopPropagation();
+    const panel = $(`ms-${kind}-panel`);
+    const wasOpen = !panel.hidden;
+    // Only one panel open at a time.
+    $('ms-broker-panel').hidden = true;
+    $('ms-lender-panel').hidden = true;
+    panel.hidden = wasOpen;
+  });
+  // Clicks inside the panel must not bubble to the document handler below,
+  // or ticking a checkbox would immediately close the panel.
+  $(`ms-${kind}-panel`).addEventListener('click', (e) => e.stopPropagation());
 });
 
-$('deal-lender').addEventListener('change', (e) => {
-  state.dealLender = e.target.value;
-  applyDealFilters();
+document.addEventListener('click', () => {
+  $('ms-broker-panel').hidden = true;
+  $('ms-lender-panel').hidden = true;
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    $('ms-broker-panel').hidden = true;
+    $('ms-lender-panel').hidden = true;
+  }
 });
 
 $('deal-clear').addEventListener('click', () => {
   state.dealSearch = '';
-  state.dealBroker = 'all';
-  state.dealLender = 'all';
+  state.dealBrokers = [];
+  state.dealLenders = [];
   $('deal-search').value = '';
-  $('deal-broker').value = 'all';
-  $('deal-lender').value = 'all';
+  document.querySelectorAll('.ms-panel input[type=checkbox]')
+    .forEach((cb) => { cb.checked = false; });
+  updateMultiselectLabel('broker', 'brokers');
+  updateMultiselectLabel('lender', 'lenders');
   applyDealFilters();
 });
 

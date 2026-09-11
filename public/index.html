@@ -114,12 +114,14 @@
     <div class="deal-filters">
       <input type="search" class="input deal-search" id="deal-search"
              placeholder="Search business, broker, lender…" autocomplete="off">
-      <select class="select sm" id="deal-broker">
-        <option value="all">All brokers</option>
-      </select>
-      <select class="select sm" id="deal-lender">
-        <option value="all">All lenders</option>
-      </select>
+      <div class="multiselect" id="ms-broker">
+        <button type="button" class="ms-button" id="ms-broker-btn">All brokers</button>
+        <div class="ms-panel" id="ms-broker-panel" hidden></div>
+      </div>
+      <div class="multiselect" id="ms-lender">
+        <button type="button" class="ms-button" id="ms-lender-btn">All lenders</button>
+        <div class="ms-panel" id="ms-lender-panel" hidden></div>
+      </div>
       <button class="ghost-btn" id="deal-clear">Clear</button>
       <span class="spacer"></span>
       <span class="cache-note" id="deal-count"></span>

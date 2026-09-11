@@ -299,7 +299,47 @@ td { padding: 12px 14px; font-size: 15px; vertical-align: middle; }
   flex: 1 1 260px; min-width: 200px; max-width: 420px;
   padding: 8px 12px; font-size: 14px;
 }
-.deal-filters .select.sm { min-width: 140px; }
+/* Multi-select: a button that opens a checkbox panel. Native <select multiple>
+   needs ctrl/cmd-click to pick more than one, which nobody discovers. */
+.multiselect { position: relative; }
+.ms-button {
+  background: var(--surface); border: 1px solid var(--border); color: #fff;
+  font-family: 'Rajdhani', sans-serif; font-size: 14px; font-weight: 700;
+  padding: 8px 30px 8px 12px; border-radius: 8px; cursor: pointer;
+  min-width: 150px; text-align: left; letter-spacing: .3px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%2364748b' stroke-width='2' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 11px center;
+  transition: border-color .2s;
+}
+.ms-button:hover { border-color: var(--accent); }
+.ms-button.has-selection { border-color: var(--accent); color: var(--accent); }
+
+.ms-panel {
+  position: absolute; top: calc(100% + 6px); left: 0; z-index: 40;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 10px; padding: 6px;
+  min-width: 240px; max-height: 320px; overflow-y: auto;
+  box-shadow: 0 12px 32px rgba(0,0,0,.5);
+}
+.ms-actions {
+  display: flex; gap: 6px; padding: 4px 6px 8px;
+  border-bottom: 1px solid var(--border); margin-bottom: 6px;
+}
+.ms-actions button {
+  background: none; border: none; color: var(--accent);
+  font-family: inherit; font-size: 11px; cursor: pointer; padding: 2px 4px;
+  text-decoration: underline; text-underline-offset: 2px;
+}
+.ms-actions button:hover { color: var(--accent2); }
+
+.ms-option {
+  display: flex; align-items: center; gap: 9px;
+  padding: 7px 9px; border-radius: 6px; cursor: pointer;
+  font-size: 13px; color: var(--text);
+}
+.ms-option:hover { background: rgba(0,194,255,.07); }
+.ms-option input { accent-color: var(--accent); width: 15px; height: 15px; cursor: pointer; }
+.ms-option .ms-count { margin-left: auto; color: var(--muted); font-size: 11px; }
 
 /* Sortable column headers */
 th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
